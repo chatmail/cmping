@@ -84,11 +84,11 @@ def perform_ping(count, relay1, relay2):
         pinger = Pinger(count, sender, receiver)
         received = {}
         try:
-            for seq, duration, size in pinger.receive():
+            for seq, ms_duration, size in pinger.receive():
                 print(
-                    f"{size} bytes ME -> {pinger.addr1} -> {pinger.addr2} -> ME seq={seq} time={duration:0.2}s"
+                    f"{size} bytes ME -> {pinger.addr1} -> {pinger.addr2} -> ME seq={seq} time={ms_duration:0.2f}ms"
                 )
-                received[seq] = duration
+                received[seq] = ms_duration
 
         except KeyboardInterrupt:
             pass
@@ -96,11 +96,14 @@ def perform_ping(count, relay1, relay2):
         print(
             f"{pinger.sent} transmitted, {pinger.received} received, {pinger.loss:.2f}% loss"
         )
-        rmin = min(received.values())
-        ravg = sum(received.values()) / len(received)
-        rmax = max(received.values())
-        rmdev = stdev(received.values())
-        print(f"rtt min/avg/max/mdev = {rmin:.3f}/{ravg:.3f}/{rmax:.3f}/{rmdev:.3f} s")
+        if received:
+            rmin = min(received.values())
+            ravg = sum(received.values()) / len(received)
+            rmax = max(received.values())
+            rmdev = stdev(received.values()) if len(received) >= 2 else rmax
+            print(
+                f"rtt min/avg/max/mdev = {rmin:.3f}/{ravg:.3f}/{rmax:.3f}/{rmdev:.3f} ms"
+            )
 
 
 class Pinger:
@@ -109,7 +112,10 @@ class Pinger:
         self.sender = sender
         self.receiver = receiver
         self.addr1, self.addr2 = sender.get_config("addr"), receiver.get_config("addr")
-        print(f"PING {self.addr1} -> {self.addr2}")
+        relay1 = self.addr1.split("@")[1]
+        relay2 = self.addr2.split("@")[1]
+
+        print(f"PING {relay1}({self.addr1}) -> {relay2}({self.addr2}) count={count}")
         ALPHANUMERIC = string.ascii_lowercase + string.digits
         self.tx = "".join(random.choices(ALPHANUMERIC, k=30))
         t = threading.Thread(target=self.send_pings)
@@ -125,7 +131,7 @@ class Pinger:
     def send_pings(self):
         chat1 = self.sender.create_chat(self.receiver)
         for seq in range(self.count):
-            text = f"{self.tx} {time.time()} {seq:14}"
+            text = f"{self.tx} {time.time():.4f} {seq:17}"
             chat1.send_text(text)
             self.sent += 1
             time.sleep(1.1)
@@ -139,10 +145,10 @@ class Pinger:
                 text = msg.get_snapshot().text
                 parts = text.strip().split()
                 if len(parts) == 3 and parts[0] == self.tx:
-                    duration = time.time() - float(parts[1])
+                    ms_duration = (time.time() - float(parts[1])) * 1000
                     self.received += 1
                     num_pending -= 1
-                    yield int(parts[2]), duration, len(text)
+                    yield int(parts[2]), ms_duration, len(text)
                 # else:
                 #    print(f"!received historic/bogus message from {self.addr2}: {text}")
             elif event.kind == EventType.ERROR:
