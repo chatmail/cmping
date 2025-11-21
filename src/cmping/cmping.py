@@ -1,6 +1,10 @@
 import argparse
+import random
+import string
 import sys
+import threading
 import time
+from statistics import stdev
 
 from deltachat_rpc_client import DeltaChat, EventType, Rpc
 
@@ -20,27 +24,49 @@ def main():
         action="store",
         help="chatmail relay domain",
     )
+    parser.add_argument(
+        "-c",
+        dest="count",
+        type=int,
+        default=30,
+        help="number of pings",
+    )
     args = parser.parse_args()
 
-    perform_ping(args.relay1, args.relay2)
+    perform_ping(args.count, args.relay1, args.relay2)
 
 
-def get_relay_account(dc, domain):
-    for account in dc.get_all_accounts():
-        addr = account.get_config("configured_addr")
-        if addr is not None and addr.split("@")[1] == domain:
-            account.bring_online()
-            return account
+class AccountMaker:
+    def __init__(self, dc):
+        self.dc = dc
+        self.online = []
 
-    print(f"creating account on {domain}")
-    account = dc.add_account()
-    account.set_config("mdns_enabled", "0")
-    account.set_config_from_qr(f"dcaccount:{domain}")
-    account.bring_online()
-    return account
+    def wait_all_online(self):
+        remaining = list(self.online)
+        while remaining:
+            ac = remaining.pop()
+            ac.wait_for_event(EventType.IMAP_INBOX_IDLE)
+
+    def _add_online(self, account):
+        account.start_io()
+        self.online.append(account)
+
+    def get_relay_account(self, domain):
+        for account in self.dc.get_all_accounts():
+            addr = account.get_config("configured_addr")
+            if addr is not None and addr.split("@")[1] == domain:
+                if account not in self.online:
+                    break
+        else:
+            print(f"creating account on {domain}")
+            account = self.dc.add_account()
+            account.set_config_from_qr(f"dcaccount:{domain}")
+
+        self._add_online(account)
+        return account
 
 
-def perform_ping(relay1, relay2):
+def perform_ping(count, relay1, relay2):
     with Rpc() as rpc:
         dc = DeltaChat(rpc)
         system_info = dc.get_system_info()
@@ -49,30 +75,78 @@ def perform_ping(relay1, relay2):
             file=sys.stderr,
         )
 
-        sender = get_relay_account(dc, relay1)
-        receiver = get_relay_account(dc, relay2)
-        chat1 = sender.create_chat(receiver)
-        _chat2 = receiver.create_chat(sender)
+        maker = AccountMaker(dc)
+        sender = maker.get_relay_account(relay1)
+        receiver = maker.get_relay_account(relay2)
+        maker.wait_all_online()
+        _ = receiver.create_chat(sender)
 
-        addr1, addr2 = sender.get_config("addr"), receiver.get_config("addr")
-        print(f"PING {relay1} ({addr1}) -> {relay2} ({addr2}))")
-        for i in range(60):
-            text = f"ping {i:59}"
-            start = time.time()
+        pinger = Pinger(count, sender, receiver)
+        received = {}
+        try:
+            for seq, duration, size in pinger.receive():
+                print(
+                    f"{size} bytes ME -> {pinger.addr1} -> {pinger.addr2} -> ME seq={seq} time={duration:0.2}s"
+                )
+                received[seq] = duration
+
+        except KeyboardInterrupt:
+            pass
+        print(f"--- {pinger.addr1} -> {pinger.addr2} statistics ---")
+        print(
+            f"{pinger.sent} transmitted, {pinger.received} received, {pinger.loss:.2f}% loss"
+        )
+        rmin = min(received.values())
+        ravg = sum(received.values()) / len(received)
+        rmax = max(received.values())
+        rmdev = stdev(received.values())
+        print(f"rtt min/avg/max/mdev = {rmin:.3f}/{ravg:.3f}/{rmax:.3f}/{rmdev:.3f} s")
+
+
+class Pinger:
+    def __init__(self, count, sender, receiver):
+        self.count = count
+        self.sender = sender
+        self.receiver = receiver
+        self.addr1, self.addr2 = sender.get_config("addr"), receiver.get_config("addr")
+        print(f"PING {self.addr1} -> {self.addr2}")
+        ALPHANUMERIC = string.ascii_lowercase + string.digits
+        self.tx = "".join(random.choices(ALPHANUMERIC, k=30))
+        t = threading.Thread(target=self.send_pings)
+        t.setDaemon(True)
+        self.sent = 0
+        self.received = 0
+        t.start()
+
+    @property
+    def loss(self):
+        return 1 if self.sent == 0 else (1 - self.received / self.sent) * 100
+
+    def send_pings(self):
+        chat1 = self.sender.create_chat(self.receiver)
+        for seq in range(self.count):
+            text = f"{self.tx} {time.time()} {seq:14}"
             chat1.send_text(text)
-            while 1:
-                event = receiver.wait_for_event()
-                if event.kind == EventType.INCOMING_MSG:
-                    msg = receiver.get_message_by_id(event.msg_id)
-                    if msg.get_snapshot().text == text:
-                        break
-                    print(f"received historic/bogus message from {addr2}: {msg.text}")
-                elif event.kind == EventType.ERROR:
-                    print(f"ERROR: {event.msg}")
-            print(
-                f"{len(text)} bytes ME -> {relay1} -> {relay2} -> ME seq={i} time={time.time() - start:.2}s"
-            )
-            time.sleep(1)
+            self.sent += 1
+            time.sleep(1.1)
+
+    def receive(self):
+        num_pending = self.count
+        while num_pending > 0:
+            event = self.receiver.wait_for_event()
+            if event.kind == EventType.INCOMING_MSG:
+                msg = self.receiver.get_message_by_id(event.msg_id)
+                text = msg.get_snapshot().text
+                parts = text.strip().split()
+                if len(parts) == 3 and parts[0] == self.tx:
+                    duration = time.time() - float(parts[1])
+                    self.received += 1
+                    num_pending -= 1
+                    yield int(parts[2]), duration, len(text)
+                # else:
+                #    print(f"!received historic/bogus message from {self.addr2}: {text}")
+            elif event.kind == EventType.ERROR:
+                print(f"ERROR: {event.msg}")
 
 
 if __name__ == "__main__":
