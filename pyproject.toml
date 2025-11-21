@@ -6,8 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "cmping"
 version = "0.2"
 dependencies = [
-  "deltachat-rpc-server",
-  "deltachat-rpc-client",
+  "deltachat-rpc-server==2.24.0",
+  "deltachat-rpc-client==2.24.0",
 ]
 
 [project.scripts]
