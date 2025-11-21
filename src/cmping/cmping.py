@@ -27,7 +27,8 @@ def main():
 
 def get_relay_account(dc, domain):
     for account in dc.get_all_accounts():
-        if account.get_config("addr").split("@")[1] == domain:
+        addr = account.get_config("configured_addr")
+        if addr is not None and addr.split("@")[1] == domain:
             account.bring_online()
             return account
 
