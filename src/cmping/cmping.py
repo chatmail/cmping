@@ -1,8 +1,5 @@
 import argparse
 import logging
-import random
-import secrets
-import string
 import sys
 import time
 
@@ -29,16 +26,6 @@ def main():
     perform_ping(args.relay1, args.relay2)
 
 
-ALPHANUMERIC = string.ascii_lowercase + string.digits
-ALPHANUMERIC_PUNCT = string.ascii_letters + string.digits + string.punctuation
-
-
-def newmail(domain):
-    user = "ci_" + "".join(random.choices(ALPHANUMERIC, k=6))
-    password = "".join(secrets.choice(ALPHANUMERIC_PUNCT) for _ in range(25))
-    return f"{user}@{domain}", f"{password}"
-
-
 def perform_ping(relay1, relay2):
     with Rpc() as rpc:
         dc = DeltaChat(rpc)
@@ -48,18 +35,17 @@ def perform_ping(relay1, relay2):
             file=sys.stderr,
         )
 
-        ac1 = dc.add_account()
-        ac2 = dc.add_account()
-        ac1.set_config("mdns_enabled", "0")
-        ac2.set_config("mdns_enabled", "0")
-        addr1, mail_pw = newmail(relay1)
-        ac1.set_config("addr", addr1)
-        ac1.set_config("mail_pw", mail_pw)
-        ac1.configure()
-        addr2, mail_pw = newmail(relay2)
-        ac2.set_config("addr", addr2)
-        ac2.set_config("mail_pw", mail_pw)
-        ac2.configure()
+        if len(dc.get_all_accounts()) != 2:
+            assert len(dc.get_all_accounts()) == 0, "remove accounts directory"
+            print(f"recreating accounts on {relay1} and {relay2}")
+            ac1 = dc.add_account()
+            ac2 = dc.add_account()
+            ac1.set_config("mdns_enabled", "0")
+            ac2.set_config("mdns_enabled", "0")
+            ac1.set_config_from_qr(f"dcaccount:{relay1}")
+            ac2.set_config_from_qr(f"dcaccount:{relay2}")
+        else:
+            ac1, ac2 = dc.get_all_accounts()
 
         ac1.bring_online()
         ac2.bring_online()
@@ -67,6 +53,7 @@ def perform_ping(relay1, relay2):
         chat1 = ac1.create_chat(ac2)
         _chat2 = ac2.create_chat(ac1)
 
+        addr1, addr2 = ac1.get_config("addr"), ac2.get_config("addr")
         print(f"PING {relay1} ({addr1}) -> {relay2} ({addr2}))")
         for i in range(60):
             text = f"ping {i:59}"
