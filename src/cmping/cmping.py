@@ -67,7 +67,6 @@ def perform_ping(relay1, relay2):
         chat1 = ac1.create_chat(ac2)
         _chat2 = ac2.create_chat(ac1)
 
-        print("# times include delay of client to each of the relays, so are not just MTA to MTA")
         print(f"PING {relay1} ({addr1}) -> {relay2} ({addr2}))")
         for i in range(60):
             text = f"ping {i:59}"
@@ -76,7 +75,7 @@ def perform_ping(relay1, relay2):
             msg = ac2.wait_for_incoming_msg().get_snapshot()
             assert msg.text == text
             print(
-                f"{len(text)} bytes from {relay1} to {relay2} seq={i} time={time.time() - start:.4}s"
+                f"{len(text)} bytes [ME] -> {relay1} -> {relay2} -> [ME] seq={i} time={time.time() - start:.4}s"
             )
 
 
