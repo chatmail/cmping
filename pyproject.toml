@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cmping"
+version = "0.2"
+dependencies = [
+  "deltachat-rpc-server",
+  "deltachat-rpc-client",
+]
+
+[project.scripts]
+cmping = "cmping.cmping:main"
+
+[tool.pytest.ini_options]
+addopts = "-v -ra --strict-markers"
+
+[tool.ruff]
+lint.select = [
+  "F", # Pyflakes
+  "I", # isort
+
+  "PLC", # Pylint Convention
+  "PLE", # Pylint Error
+  "PLW", # Pylint Warning
+]
+lint.ignore = [
+  "PLC0415" # import-outside-top-level
+]
