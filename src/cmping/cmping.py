@@ -59,11 +59,15 @@ def perform_ping(relay1, relay2):
             text = f"ping {i:59}"
             start = time.time()
             chat1.send_text(text)
-            msg = ac2.wait_for_incoming_msg().get_snapshot()
-            assert msg.text == text
+            while 1:
+                msg = ac2.wait_for_incoming_msg().get_snapshot()
+                if msg.text == text:
+                    break
+                print(f"received historic/bogus message from {relay2}: ignoring")
             print(
                 f"{len(text)} bytes [ME] -> {relay1} -> {relay2} -> [ME] seq={i} time={time.time() - start:.4}s"
             )
+            time.sleep(1)
 
 
 if __name__ == "__main__":
