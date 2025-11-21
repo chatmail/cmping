@@ -1,25 +1,25 @@
 import argparse
+import logging
 import sys
-from deltachat_rpc_client import Bot, DeltaChat, EventType, Rpc, events, Account
 
-
-def perform_ping(relay1, relay2):
-
+from deltachat_rpc_client import DeltaChat, EventType, Rpc, events
 
 
 def main(args=None):
     if args is None:
         args = list(sys.argv)
 
-    parser = argparse.ArgumentParser(description="ping between addresses of chatmail relays")
+    parser = argparse.ArgumentParser(
+        description="ping between addresses of chatmail relays"
+    )
 
     parser.add_argument(
-        "relay1",
+        dest="relay1",
         action="store",
         help="chatmail relay domain",
     )
     parser.add_argument(
-        "relay2",
+        dest="relay2",
         action="store",
         help="chatmail relay domain",
     )
@@ -28,8 +28,8 @@ def main(args=None):
     perform_ping(args.relay1, args.relay2)
 
 
-def log_verbose(msg):
-    print(msg)
+def log_verbose(msg, args):
+    print(msg % args)
 
 
 hooks = events.HookCollection()
@@ -63,19 +63,15 @@ def perform_ping(relay1, relay2):
 
         accounts = deltachat.get_all_accounts()
         if len(accounts) == 0:
-            sender = Account()
+            sender = deltachat.add_account()
             sender.set_config_from_qr(f"dcaccount:https://{relay1}/new")
-            receiver = Account()
-            sender.set_config_from_qr(f"dcaccount:https://{relay2}/new")
+            receiver = deltachat.add_account()
+            receiver.set_config_from_qr(f"dcaccount:https://{relay2}/new")
             assert 0
-            if not bot.is_configured():
-                configure_thread = Thread(run=bot.configure, kwargs={"email": sys.argv[1], "password": sys.argv[2]})
-                configure_thread.start()
 
-        assert len(accounts) == 2
+        assert len(accounts) == 2, len(accounts)
 
         account1, account2 = deltachat.get_all_accounts()
-
 
 
 if __name__ == "__main__":
