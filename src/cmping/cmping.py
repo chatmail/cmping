@@ -1,5 +1,4 @@
 import argparse
-import logging
 import sys
 import time
 
@@ -71,5 +70,4 @@ def perform_ping(relay1, relay2):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     main()
