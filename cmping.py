@@ -2,7 +2,6 @@
 chatmail ping aka "cmping" transmits messages between relays.
 """
 
-
 import argparse
 import random
 import string
@@ -34,13 +33,20 @@ def main():
         dest="count",
         type=int,
         default=30,
-        help="number of pings",
+        help="number of message pings",
+    )
+    parser.add_argument(
+        "-i",
+        dest="interval",
+        type=float,
+        default=1.1,
+        help="seconds between message sending (default 1.1)",
     )
     args = parser.parse_args()
     if not args.relay2:
         args.relay2 = args.relay1
 
-    perform_ping(args.count, args.relay1, args.relay2)
+    perform_ping(args.count, args.interval, args.relay1, args.relay2)
 
 
 class AccountMaker:
@@ -73,7 +79,7 @@ class AccountMaker:
         return account
 
 
-def perform_ping(count, relay1, relay2):
+def perform_ping(count, interval, relay1, relay2):
     accounts_dir = xdg_cache_home().joinpath("cmping")
     print(f"# using accounts_dir at: {accounts_dir}")
     with Rpc(accounts_dir=accounts_dir) as rpc:
@@ -84,7 +90,7 @@ def perform_ping(count, relay1, relay2):
         maker.wait_all_online()
         _ = receiver.create_chat(sender)
 
-        pinger = Pinger(count, sender, receiver)
+        pinger = Pinger(count, interval, sender, receiver)
         received = {}
         try:
             for seq, ms_duration, size in pinger.receive():
@@ -110,8 +116,9 @@ def perform_ping(count, relay1, relay2):
 
 
 class Pinger:
-    def __init__(self, count, sender, receiver):
+    def __init__(self, count, interval, sender, receiver):
         self.count = count
+        self.interval = interval
         self.sender = sender
         self.receiver = receiver
         self.addr1, self.addr2 = sender.get_config("addr"), receiver.get_config("addr")
@@ -119,7 +126,7 @@ class Pinger:
         self.relay2 = self.addr2.split("@")[1]
 
         print(
-            f"PING {self.relay1}({self.addr1}) -> {self.relay2}({self.addr2}) count={count}"
+            f"PING {self.relay1}({self.addr1}) -> {self.relay2}({self.addr2}) count={count} interval={interval}s"
         )
         ALPHANUMERIC = string.ascii_lowercase + string.digits
         self.tx = "".join(random.choices(ALPHANUMERIC, k=30))
@@ -139,7 +146,7 @@ class Pinger:
             text = f"{self.tx} {time.time():.4f} {seq:17}"
             chat1.send_text(text)
             self.sent += 1
-            time.sleep(1.1)
+            time.sleep(self.interval)
 
     def receive(self):
         num_pending = self.count
