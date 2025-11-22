@@ -63,7 +63,7 @@ class AccountMaker:
         else:
             print(f"# creating account on {domain}")
             account = self.dc.add_account()
-            account.set_config_from_qr(f"dcaccount:{domain}")
+            account.set_config_from_qr(f"dcaccount:https://{domain}/new")
 
         self._add_online(account)
         return account
@@ -85,7 +85,7 @@ def perform_ping(count, relay1, relay2):
         try:
             for seq, ms_duration, size in pinger.receive():
                 print(
-                    f"{size} bytes ME -> {pinger.addr1} -> {pinger.addr2} -> ME seq={seq} time={ms_duration:0.2f}ms"
+                    f"{size} bytes ME -> {pinger.relay1} -> {pinger.relay2} -> ME seq={seq} time={ms_duration:0.2f}ms"
                 )
                 received[seq] = ms_duration
 
@@ -111,10 +111,10 @@ class Pinger:
         self.sender = sender
         self.receiver = receiver
         self.addr1, self.addr2 = sender.get_config("addr"), receiver.get_config("addr")
-        relay1 = self.addr1.split("@")[1]
-        relay2 = self.addr2.split("@")[1]
+        self.relay1 = self.addr1.split("@")[1]
+        self.relay2 = self.addr2.split("@")[1]
 
-        print(f"PING {relay1}({self.addr1}) -> {relay2}({self.addr2}) count={count}")
+        print(f"PING {self.relay1}({self.addr1}) -> {self.relay2}({self.addr2}) count={count}")
         ALPHANUMERIC = string.ascii_lowercase + string.digits
         self.tx = "".join(random.choices(ALPHANUMERIC, k=30))
         t = threading.Thread(target=self.send_pings)
