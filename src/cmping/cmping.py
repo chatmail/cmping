@@ -1,17 +1,16 @@
 import argparse
 import random
 import string
-import sys
 import threading
 import time
 from statistics import stdev
-from xdg_base_dirs import xdg_cache_home
 
 from deltachat_rpc_client import DeltaChat, EventType, Rpc
+from xdg_base_dirs import xdg_cache_home
 
 
 def main():
-    """Ping between addresses of specified chatmail relay domains. """
+    """Ping between addresses of specified chatmail relay domains."""
 
     parser = argparse.ArgumentParser(description=main.__doc__)
     parser.add_argument(
@@ -63,7 +62,7 @@ class AccountMaker:
         else:
             print(f"# creating account on {domain}")
             account = self.dc.add_account()
-            account.set_config_from_qr(f"dcaccount:https://{domain}/new")
+            account.set_config_from_qr(f"dcaccount:{domain}")
 
         self._add_online(account)
         return account
@@ -114,7 +113,9 @@ class Pinger:
         self.relay1 = self.addr1.split("@")[1]
         self.relay2 = self.addr2.split("@")[1]
 
-        print(f"PING {self.relay1}({self.addr1}) -> {self.relay2}({self.addr2}) count={count}")
+        print(
+            f"PING {self.relay1}({self.addr1}) -> {self.relay2}({self.addr2}) count={count}"
+        )
         ALPHANUMERIC = string.ascii_lowercase + string.digits
         self.tx = "".join(random.choices(ALPHANUMERIC, k=30))
         t = threading.Thread(target=self.send_pings)
