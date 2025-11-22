@@ -58,3 +58,19 @@ Example output for two-domain ping:
     10 transmitted, 10 received, 0.00% loss
     rtt min/avg/max/mdev = 367.384/417.246/792.292/132.163 ms
 
+
+## Developing / Releasing cmping
+
+1. clone the git repository at https://github.com/chatmail/cmping 
+
+2. install 'cmping" in editing mode: `pip install -e .`
+
+3. edit cmping.py and test 
+
+4. set a new git-tag 
+
+4. install `pip install build twine`
+
+5. run the following command: 
+
+        rm -rf dist && python -m build && twine upload -r pypi dist/cmping*
