@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cmping"
 readme = "README.md"
+description = "ping messages between chatmail relays"
 dependencies = [
   "deltachat-rpc-server==2.24.0",
   "deltachat-rpc-client==2.24.0",
@@ -22,7 +23,6 @@ py-modules = ["cmping"]
 
 [project.urls]
 Repository = "https://github.com/chatmail/cmping"
-Issues = "https://github.com/chatmail/cmping/issues"
 
 [project.scripts]
 cmping = "cmping:main"
