@@ -5,15 +5,15 @@ import sys
 import threading
 import time
 from statistics import stdev
+from xdg_base_dirs import xdg_cache_home
 
 from deltachat_rpc_client import DeltaChat, EventType, Rpc
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="ping between addresses of chatmail relays"
-    )
+    """Ping between addresses of specified chatmail relay domains. """
 
+    parser = argparse.ArgumentParser(description=main.__doc__)
     parser.add_argument(
         "relay1",
         action="store",
@@ -22,7 +22,8 @@ def main():
     parser.add_argument(
         "relay2",
         action="store",
-        help="chatmail relay domain",
+        nargs="?",
+        help="chatmail relay domain (defaults to relay1 if not specified)",
     )
     parser.add_argument(
         "-c",
@@ -32,6 +33,8 @@ def main():
         help="number of pings",
     )
     args = parser.parse_args()
+    if not args.relay2:
+        args.relay2 = args.relay1
 
     perform_ping(args.count, args.relay1, args.relay2)
 
@@ -58,7 +61,7 @@ class AccountMaker:
                 if account not in self.online:
                     break
         else:
-            print(f"creating account on {domain}")
+            print(f"# creating account on {domain}")
             account = self.dc.add_account()
             account.set_config_from_qr(f"dcaccount:{domain}")
 
@@ -67,14 +70,10 @@ class AccountMaker:
 
 
 def perform_ping(count, relay1, relay2):
-    with Rpc() as rpc:
+    accounts_dir = xdg_cache_home().joinpath("cmping")
+    print(f"# using accounts_dir at: {accounts_dir}")
+    with Rpc(accounts_dir=accounts_dir) as rpc:
         dc = DeltaChat(rpc)
-        system_info = dc.get_system_info()
-        print(
-            f"Running deltachat core {system_info.deltachat_core_version}",
-            file=sys.stderr,
-        )
-
         maker = AccountMaker(dc)
         sender = maker.get_relay_account(relay1)
         receiver = maker.get_relay_account(relay2)
