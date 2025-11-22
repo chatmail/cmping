@@ -1,10 +1,9 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68", "setuptools-git-versioning >=2.0,<3"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "cmping"
-version = "0.5.7"
 readme = "README.md"
 dependencies = [
   "deltachat-rpc-server==2.24.0",
@@ -12,15 +11,28 @@ dependencies = [
   "xdg-base-dirs>=6.0.2", 
 ]
 
+dynamic = ["version"]
+
+[tool.setuptools-git-versioning]
+enabled = true
+
+[tool.setuptools]
+py-modules = ["cmping"]
+
+
 [project.urls]
 Repository = "https://github.com/chatmail/cmping"
 Issues = "https://github.com/chatmail/cmping/issues"
 
 [project.scripts]
-cmping = "cmping.cmping:main"
+cmping = "cmping:main"
 
 [tool.pytest.ini_options]
 addopts = "-v -ra --strict-markers"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
 
 [tool.ruff]
 lint.select = [

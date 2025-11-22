@@ -1,3 +1,8 @@
+"""
+chatmail ping aka "cmping" transmits messages between relays.
+"""
+
+
 import argparse
 import random
 import string
