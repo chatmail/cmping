@@ -3,7 +3,9 @@ chatmail ping aka "cmping" transmits messages between relays.
 """
 
 import argparse
+import os
 import random
+import signal
 import string
 import threading
 import time
@@ -42,11 +44,13 @@ def main():
         default=1.1,
         help="seconds between message sending (default 1.1)",
     )
+    parser.add_argument('-v', dest="verbose", action='count', default=0, help="increase verbosity")
     args = parser.parse_args()
     if not args.relay2:
         args.relay2 = args.relay1
 
-    perform_ping(args.count, args.interval, args.relay1, args.relay2)
+    pinger = perform_ping(args)
+    raise SystemExit(0 if pinger.received == pinger.sent else 1)
 
 
 class AccountMaker:
@@ -79,18 +83,18 @@ class AccountMaker:
         return account
 
 
-def perform_ping(count, interval, relay1, relay2):
+def perform_ping(args):
     accounts_dir = xdg_cache_home().joinpath("cmping")
     print(f"# using accounts_dir at: {accounts_dir}")
     with Rpc(accounts_dir=accounts_dir) as rpc:
         dc = DeltaChat(rpc)
         maker = AccountMaker(dc)
-        sender = maker.get_relay_account(relay1)
-        receiver = maker.get_relay_account(relay2)
+        sender = maker.get_relay_account(args.relay1)
+        receiver = maker.get_relay_account(args.relay2)
         maker.wait_all_online()
         _ = receiver.create_chat(sender)
 
-        pinger = Pinger(count, interval, sender, receiver)
+        pinger = Pinger(args, sender, receiver)
         received = {}
         try:
             for seq, ms_duration, size in pinger.receive():
@@ -113,12 +117,12 @@ def perform_ping(count, interval, relay1, relay2):
             print(
                 f"rtt min/avg/max/mdev = {rmin:.3f}/{ravg:.3f}/{rmax:.3f}/{rmdev:.3f} ms"
             )
+        return pinger
 
 
 class Pinger:
-    def __init__(self, count, interval, sender, receiver):
-        self.count = count
-        self.interval = interval
+    def __init__(self, args, sender, receiver):
+        self.args = args
         self.sender = sender
         self.receiver = receiver
         self.addr1, self.addr2 = sender.get_config("addr"), receiver.get_config("addr")
@@ -126,7 +130,7 @@ class Pinger:
         self.relay2 = self.addr2.split("@")[1]
 
         print(
-            f"PING {self.relay1}({self.addr1}) -> {self.relay2}({self.addr2}) count={count} interval={interval}s"
+            f"CMPING {self.relay1}({self.addr1}) -> {self.relay2}({self.addr2}) count={args.count} interval={args.interval}s"
         )
         ALPHANUMERIC = string.ascii_lowercase + string.digits
         self.tx = "".join(random.choices(ALPHANUMERIC, k=30))
@@ -142,14 +146,17 @@ class Pinger:
 
     def send_pings(self):
         chat1 = self.sender.create_chat(self.receiver)
-        for seq in range(self.count):
+        for seq in range(self.args.count):
             text = f"{self.tx} {time.time():.4f} {seq:17}"
             chat1.send_text(text)
             self.sent += 1
-            time.sleep(self.interval)
+            time.sleep(self.args.interval)
+        # we sent all pings, let's wait a bit, then force quit if main didn't finish
+        time.sleep(60)
+        os.kill(os.getpid(), signal.SIGINT)
 
     def receive(self):
-        num_pending = self.count
+        num_pending = self.args.count
         while num_pending > 0:
             event = self.receiver.wait_for_event()
             if event.kind == EventType.INCOMING_MSG:
@@ -165,6 +172,12 @@ class Pinger:
                 #    print(f"!received historic/bogus message from {self.addr2}: {text}")
             elif event.kind == EventType.ERROR:
                 print(f"ERROR: {event.msg}")
+            elif event.kind == EventType.MSG_FAILED:
+                msg = self.receiver.get_message_by_id(event.msg_id)
+                text = msg.get_snapshot().text
+                print(f"Message failed: {text}")
+            elif event.kind == EventType.INFO and self.args.verbose >= 1:
+                print(f"INFO: {event.msg}")
 
 
 if __name__ == "__main__":

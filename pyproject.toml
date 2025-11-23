@@ -23,6 +23,7 @@ py-modules = ["cmping"]
 
 [project.urls]
 Repository = "https://github.com/chatmail/cmping"
+Changelog = "https://github.com/chatmail/cmping/blob/master/CHANGELOG.md"
 
 [project.scripts]
 cmping = "cmping:main"
