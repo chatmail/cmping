@@ -1,6 +1,10 @@
 
 # cmping changelog 
 
+## 0.11.1
+
+- allow higher rpc-client/server versions
+
 ## 0.11.0
 
 - show clock-measurements with "-v" 
