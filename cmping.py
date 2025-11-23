@@ -44,7 +44,9 @@ def main():
         default=1.1,
         help="seconds between message sending (default 1.1)",
     )
-    parser.add_argument('-v', dest="verbose", action='count', default=0, help="increase verbosity")
+    parser.add_argument(
+        "-v", dest="verbose", action="count", default=0, help="increase verbosity"
+    )
     args = parser.parse_args()
     if not args.relay2:
         args.relay2 = args.relay1
@@ -157,6 +159,7 @@ class Pinger:
 
     def receive(self):
         num_pending = self.args.count
+        start_clock = time.time()
         while num_pending > 0:
             event = self.receiver.wait_for_event()
             if event.kind == EventType.INCOMING_MSG:
@@ -168,6 +171,7 @@ class Pinger:
                     self.received += 1
                     num_pending -= 1
                     yield int(parts[2]), ms_duration, len(text)
+                    start_clock = time.time()
                 # else:
                 #    print(f"!received historic/bogus message from {self.addr2}: {text}")
             elif event.kind == EventType.ERROR:
@@ -177,7 +181,8 @@ class Pinger:
                 text = msg.get_snapshot().text
                 print(f"Message failed: {text}")
             elif event.kind == EventType.INFO and self.args.verbose >= 1:
-                print(f"INFO: {event.msg}")
+                ms_now = (time.time() - start_clock) * 1000
+                print(f"INFO {ms_now:07.1f}ms: {event.msg}")
 
 
 if __name__ == "__main__":

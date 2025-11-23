@@ -1,5 +1,11 @@
 
-# 0.10.0
+# cmping changelog 
+
+## 0.11.0
+
+- show clock-measurements with "-v" 
+
+## 0.10.0
 
 - added -v option for more verbosity (showing INFO messages from core) 
 
