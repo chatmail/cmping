@@ -180,7 +180,7 @@ class Pinger:
                 msg = self.receiver.get_message_by_id(event.msg_id)
                 text = msg.get_snapshot().text
                 print(f"Message failed: {text}")
-            elif event.kind == EventType.INFO and self.args.verbose >= 1:
+            elif event.kind in (EventType.INFO, EventType.WARNING) and self.args.verbose >= 1:
                 ms_now = (time.time() - start_clock) * 1000
                 print(f"INFO {ms_now:07.1f}ms: {event.msg}")
 
