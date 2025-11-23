@@ -65,12 +65,12 @@ Example output for two-domain ping:
 
 2. install 'cmping" in editing mode: `pip install -e .`
 
-3. edit cmping.py and test 
+3. edit cmping.py and test, finally commit your changes
 
 4. set a new git-tag 
 
-4. install `pip install build twine`
+5. install build/release tools: `pip install build twine`
 
-5. run the following command: 
+6. run the following command: 
 
         rm -rf dist && python -m build && twine upload -r pypi dist/cmping*
