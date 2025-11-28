@@ -1,6 +1,10 @@
 
 # cmping changelog 
 
+## 0.11.2
+
+- catch keyboardinterrupt and exit with code 2
+
 ## 0.11.1
 
 - allow higher rpc-client/server versions
