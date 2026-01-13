@@ -5,6 +5,7 @@ chatmail ping aka "cmping" transmits messages between relays.
 import argparse
 import os
 import random
+import secrets
 import signal
 import string
 import threading
@@ -31,6 +32,16 @@ def main():
         help="chatmail relay domain (defaults to relay1 if not specified)",
     )
     parser.add_argument(
+        "--send-host",
+        action="store",
+        help="SMTP & IMAP host of sending relay",
+    )
+    parser.add_argument(
+        "--recv-host",
+        action="store",
+        help="SMTP & IMAP host of receiving relay",
+    )
+    parser.add_argument(
         "-c",
         dest="count",
         type=int,
@@ -50,6 +61,7 @@ def main():
     args = parser.parse_args()
     if not args.relay2:
         args.relay2 = args.relay1
+        args.recv_host = args.send_host
 
     pinger = perform_ping(args)
     raise SystemExit(0 if pinger.received == pinger.sent else 1)
@@ -70,7 +82,7 @@ class AccountMaker:
         account.start_io()
         self.online.append(account)
 
-    def get_relay_account(self, domain):
+    def get_relay_account(self, domain, host):
         for account in self.dc.get_all_accounts():
             addr = account.get_config("configured_addr")
             if addr is not None and addr.split("@")[1] == domain:
@@ -79,7 +91,17 @@ class AccountMaker:
         else:
             print(f"# creating account on {domain}")
             account = self.dc.add_account()
-            account.set_config_from_qr(f"dcaccount:{domain}")
+            if host:
+                ALPHANUMERIC = string.ascii_lowercase + string.digits
+                user = "".join(random.choices(ALPHANUMERIC, k=9))
+                password = "".join(
+                    secrets.choice(ALPHANUMERIC)
+                    for _ in range(20)
+                )
+                dclogin = f"dclogin:{user}@{domain}?v=1&p={password}&sh={host}&ih={host}&sc=3&ic=3"
+                account.set_config_from_qr(dclogin)
+            else:
+                account.set_config_from_qr(f"dcaccount:{domain}")
 
         self._add_online(account)
         return account
@@ -91,8 +113,8 @@ def perform_ping(args):
     with Rpc(accounts_dir=accounts_dir) as rpc:
         dc = DeltaChat(rpc)
         maker = AccountMaker(dc)
-        sender = maker.get_relay_account(args.relay1)
-        receiver = maker.get_relay_account(args.relay2)
+        sender = maker.get_relay_account(args.relay1, args.send_host)
+        receiver = maker.get_relay_account(args.relay2, args.recv_host)
         maker.wait_all_online()
         _ = receiver.create_chat(sender)
 
