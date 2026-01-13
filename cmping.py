@@ -98,7 +98,7 @@ class AccountMaker:
                     secrets.choice(ALPHANUMERIC)
                     for _ in range(20)
                 )
-                dclogin = f"dclogin:{user}@{domain}?v=1&p={password}&sh={host}&ih={host}&sc=3&ic=3"
+                dclogin = f"dclogin:{user}@{domain}?v=1&p={password}&sh={host}&sp=443&ih={host}&ip=443&sc=3&ic=3"
                 account.set_config_from_qr(dclogin)
             else:
                 account.set_config_from_qr(f"dcaccount:{domain}")
