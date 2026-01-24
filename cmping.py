@@ -109,9 +109,9 @@ def perform_ping(args):
         for receiver in receivers:
             group.add_contact(receiver.get_config("addr"))
         
-        # Each receiver needs to accept the group chat
-        for receiver in receivers:
-            _ = receiver.create_chat(sender)
+        # Note: The group is in "unpromoted" state until first message is sent.
+        # When we send the first ping, it will promote the group and send invitations.
+        # Receivers will automatically see and accept messages in the group.
 
         pinger = Pinger(args, sender, group, receivers)
         received = {}
