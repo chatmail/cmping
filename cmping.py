@@ -11,7 +11,6 @@ import signal
 import string
 import threading
 import time
-import urllib.parse
 from statistics import stdev
 
 from deltachat_rpc_client import DeltaChat, EventType, Rpc
@@ -137,7 +136,7 @@ class AccountMaker:
             SMTP_PORT = "465"
             CERT_CHECKS = "3"
             SMTP_SECURITY = "default"
-            qr_url = f"dclogin:{username}@{domain_or_ip}/?p={urllib.parse.quote(password)}&v=1&ip={IMAP_PORT}&sp={SMTP_PORT}&ic={CERT_CHECKS}&ss={SMTP_SECURITY}"
+            qr_url = f"dclogin:{username}@{domain_or_ip}/?p={password}&v=1&ip={IMAP_PORT}&sp={SMTP_PORT}&ic={CERT_CHECKS}&ss={SMTP_SECURITY}"
             account.set_config_from_qr(qr_url)
         else:
             # Create new account with dcaccount scheme for domains
