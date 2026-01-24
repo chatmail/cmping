@@ -5,6 +5,12 @@
 
 ### Features
 
+- Add IP address support with automated account setup and progress tracking
+  - Accept IPv4 and IPv6 addresses as relay endpoints
+  - Generate dclogin URLs with random credentials for IP-based accounts
+  - Display N/M progress spinner during account setup
+  - Provide clear error feedback when accounts fail to configure
+
 - Add `-g NUMRECIPIENTS` option for multi-recipient group chat testing
   - Creates a single group chat with N recipients instead of N separate 1:1 chats
   - Shows animated N/M progress ratio that updates in-place
