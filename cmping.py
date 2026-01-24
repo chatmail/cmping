@@ -160,11 +160,10 @@ def perform_ping(args):
                     if current_seq is not None:
                         print()  # End previous line
                     # Start new line for this sequence
-                    print(f"{size} bytes ME -> {pinger.relay1} -> {pinger.relay2} -> ME seq={seq} time={ms_duration:0.2f}ms ", end="", flush=True)
+                    print(f"{size} bytes ME -> {pinger.relay1} -> {pinger.relay2} -> ME seq={seq} time={ms_duration:0.2f}ms", end="", flush=True)
                     current_seq = seq
-                else:
-                    # Print dot for additional receiver
-                    print(".", end="", flush=True)
+                # Print dot for each receiver (including the first)
+                print(".", end="", flush=True)
 
         except KeyboardInterrupt:
             pass
