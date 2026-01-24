@@ -104,26 +104,30 @@ class AccountMaker:
         is_ip = self._is_ip_address(domain_or_ip)
         
         if is_ip:
-            # For IP addresses, generate a new username and password
-            username = self._generate_username()
-            password = self._generate_password()
-            addr = f"{username}@{domain_or_ip}"
-            
-            # Check if we already have an account for this address
+            # For IP addresses, check if we already have an account for this IP
+            # (check the host part of the configured address)
             for account in self.dc.get_all_accounts():
-                existing_addr = account.get_config("configured_addr")
-                if existing_addr == addr:
-                    if account not in self.online:
-                        self._add_online(account)
-                        return account
+                addr = account.get_config("configured_addr")
+                if addr is not None:
+                    host_part = addr.split("@")[1] if "@" in addr else None
+                    if host_part == domain_or_ip:
+                        if account not in self.online:
+                            self._add_online(account)
+                            return account
             
             # Create new account with dclogin scheme
+            username = self._generate_username()
+            password = self._generate_password()
             print(f"# creating account on {domain_or_ip} with username {username}")
             account = self.dc.add_account()
             
             # Build dclogin URL with IP address
             # Format: dclogin:username@ip/?p=password&v=1&ip=993&sp=465&ic=3&ss=default
-            qr_url = f"dclogin:{username}@{domain_or_ip}/?p={urllib.parse.quote(password)}&v=1&ip=993&sp=465&ic=3&ss=default"
+            IMAP_PORT = "993"
+            SMTP_PORT = "465"
+            CERT_CHECKS = "3"
+            SMTP_SECURITY = "default"
+            qr_url = f"dclogin:{username}@{domain_or_ip}/?p={urllib.parse.quote(password)}&v=1&ip={IMAP_PORT}&sp={SMTP_PORT}&ic={CERT_CHECKS}&ss={SMTP_SECURITY}"
             account.set_config_from_qr(qr_url)
         else:
             # Original domain-based logic
