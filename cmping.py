@@ -116,7 +116,7 @@ def main():
     raise SystemExit(0 if pinger.received == expected_total else 1)
 
 
-class AccountMaker:
+class ProfileMaker:
     def __init__(self, dc):
         self.dc = dc
         self.online = []
@@ -127,36 +127,38 @@ class AccountMaker:
             ac = remaining.pop()
             ac.wait_for_event(EventType.IMAP_INBOX_IDLE)
 
-    def _add_online(self, account):
-        account.start_io()
-        self.online.append(account)
+    def _add_online(self, profile):
+        profile.start_io()
+        self.online.append(profile)
 
-    def get_relay_account(self, domain):
-        # Try to find an existing account for this domain/IP
-        for account in self.dc.get_all_accounts():
-            addr = account.get_config("configured_addr")
+    def get_relay_profile(self, domain):
+        # Try to find an existing profile for this domain/IP
+        is_cached = False
+        for profile in self.dc.get_all_accounts():
+            addr = profile.get_config("configured_addr")
             if addr is not None:
                 # Extract the domain/IP from the configured address
                 addr_domain = addr.split("@")[1] if "@" in addr else None
                 if addr_domain == domain:
-                    if account not in self.online:
+                    if profile not in self.online:
+                        is_cached = True
                         break
         else:
-            account = self.dc.add_account()
+            profile = self.dc.add_account()
             qr_url = create_qr_url(domain)
             try:
-                account.set_config_from_qr(qr_url)
+                profile.set_config_from_qr(qr_url)
             except Exception as e:
-                print(f"✗ Failed to configure account on {domain}: {e}")
+                print(f"✗ Failed to configure profile on {domain}: {e}")
                 raise
 
         try:
-            self._add_online(account)
+            self._add_online(profile)
         except Exception as e:
-            print(f"✗ Failed to bring account online for {domain}: {e}")
+            print(f"✗ Failed to bring profile online for {domain}: {e}")
             raise
 
-        return account
+        return profile, is_cached
 
 
 def perform_ping(args):
@@ -164,66 +166,97 @@ def perform_ping(args):
     print(f"# using accounts_dir at: {accounts_dir}")
     with Rpc(accounts_dir=accounts_dir) as rpc:
         dc = DeltaChat(rpc)
-        maker = AccountMaker(dc)
+        maker = ProfileMaker(dc)
 
-        # Calculate total accounts needed
-        total_accounts = 1 + args.numrecipients
-        accounts_created = 0
+        # Calculate total profiles needed
+        total_profiles = 1 + args.numrecipients
+        profiles_setup = 0
+        profiles_cached = 0
+        profiles_created = 0
 
-        # Create sender account with progress
+        # Create sender profile with progress
         print(
-            f"# Setting up accounts: {accounts_created}/{total_accounts}",
+            f"# Setting up profiles: {profiles_setup}/{total_profiles} (cached: {profiles_cached}, creating: {profiles_created})",
             end="",
             flush=True,
         )
         try:
-            sender = maker.get_relay_account(args.relay1)
-            accounts_created += 1
+            sender, is_cached = maker.get_relay_profile(args.relay1)
+            profiles_setup += 1
+            if is_cached:
+                profiles_cached += 1
+            else:
+                profiles_created += 1
             print(
-                f"\r# Setting up accounts: {accounts_created}/{total_accounts}",
+                f"\r# Setting up profiles: {profiles_setup}/{total_profiles} (cached: {profiles_cached}, creating: {profiles_created})",
                 end="",
                 flush=True,
             )
         except Exception as e:
-            print(f"\r✗ Failed to setup sender account on {args.relay1}: {e}")
+            print(f"\r✗ Failed to setup sender profile on {args.relay1}: {e}")
             sys.exit(1)
 
-        # Create receiver accounts with progress
+        # Create receiver profiles with progress - parallelize fresh profile creation
         receivers = []
-        for i in range(args.numrecipients):
-            try:
-                receiver = maker.get_relay_account(args.relay2)
-                receivers.append(receiver)
-                accounts_created += 1
-                print(
-                    f"\r# Setting up accounts: {accounts_created}/{total_accounts}",
-                    end="",
-                    flush=True,
-                )
-            except Exception as e:
-                print(
-                    f"\r✗ Failed to setup receiver account {i+1} on {args.relay2}: {e}"
-                )
-                sys.exit(1)
+        receiver_errors = []
+        receiver_lock = threading.Lock()
 
-        # Account setup complete
+        def setup_receiver_profile(i):
+            """Setup a single receiver profile"""
+            try:
+                receiver, is_cached = maker.get_relay_profile(args.relay2)
+                with receiver_lock:
+                    receivers.append(receiver)
+                    nonlocal profiles_setup, profiles_cached, profiles_created
+                    profiles_setup += 1
+                    if is_cached:
+                        profiles_cached += 1
+                    else:
+                        profiles_created += 1
+                    print(
+                        f"\r# Setting up profiles: {profiles_setup}/{total_profiles} (cached: {profiles_cached}, creating: {profiles_created})",
+                        end="",
+                        flush=True,
+                    )
+            except Exception as e:
+                with receiver_lock:
+                    receiver_errors.append((i, e))
+
+        # Create threads for parallel profile setup
+        threads = []
+        for i in range(args.numrecipients):
+            t = threading.Thread(target=setup_receiver_profile, args=(i,))
+            t.start()
+            threads.append(t)
+
+        # Wait for all threads to complete
+        for t in threads:
+            t.join()
+
+        # Check for errors
+        if receiver_errors:
+            for i, e in receiver_errors:
+                print(f"\r✗ Failed to setup receiver profile {i+1} on {args.relay2}: {e}")
+            sys.exit(1)
+
+        # Profile setup complete
         print(
-            f"\r# Setting up accounts: {accounts_created}/{total_accounts} - Complete!"
+            f"\r# Setting up profiles: {profiles_setup}/{total_profiles} (cached: {profiles_cached}, creating: {profiles_created}) - Complete!"
         )
 
-        # Wait for all accounts to be online with timeout feedback
-        print("# Waiting for all accounts to be online...", end="", flush=True)
+        # Wait for all profiles to be online with timeout feedback
+        print("# Waiting for all profiles to be online...", end="", flush=True)
         try:
             maker.wait_all_online()
             print(" Done!")
         except Exception as e:
-            print(f"\n✗ Timeout or error waiting for accounts to be online: {e}")
+            print(f"\n✗ Timeout or error waiting for profiles to be online: {e}")
             sys.exit(1)
 
         # Create a group chat from sender and add all receivers
         group = sender.create_group("cmping")
         for receiver in receivers:
-            # Create a contact for the receiver account and add to group
+            # Create a contact for the receiver profile and add to group
             contact = sender.create_contact(receiver)
             group.add_contact(contact)
 
