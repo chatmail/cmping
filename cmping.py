@@ -107,7 +107,9 @@ def perform_ping(args):
         # Create a group chat from sender and add all receivers
         group = sender.create_group("cmping")
         for receiver in receivers:
-            group.add_contact(receiver.get_config("addr"))
+            # Create a contact for the receiver account and add to group
+            contact = sender.create_contact(receiver)
+            group.add_contact(contact)
         
         # Note: The group is in "unpromoted" state until first message is sent.
         # When we send the first ping, it will promote the group and send invitations.
