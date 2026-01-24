@@ -149,11 +149,24 @@ def perform_ping(args):
         received = {}
         # Track current sequence for output formatting
         current_seq = None
+        # Track timing for each sequence: {seq: {'count': N, 'first_time': ms, 'last_time': ms, 'size': bytes}}
+        seq_tracking = {}
         try:
             for seq, ms_duration, size, receiver_idx in pinger.receive():
                 if seq not in received:
                     received[seq] = []
                 received[seq].append(ms_duration)
+                
+                # Track timing for this sequence
+                if seq not in seq_tracking:
+                    seq_tracking[seq] = {
+                        'count': 0,
+                        'first_time': ms_duration,
+                        'last_time': ms_duration,
+                        'size': size
+                    }
+                seq_tracking[seq]['count'] += 1
+                seq_tracking[seq]['last_time'] = ms_duration
                 
                 # Print new line for new sequence or first message
                 if current_seq != seq:
@@ -162,8 +175,18 @@ def perform_ping(args):
                     # Start new line for this sequence
                     print(f"{size} bytes ME -> {pinger.relay1} -> {pinger.relay2} -> ME seq={seq} time={ms_duration:0.2f}ms", end="", flush=True)
                     current_seq = seq
-                # Print dot for each receiver (including the first)
-                print(".", end="", flush=True)
+                
+                # Print N/M ratio
+                count = seq_tracking[seq]['count']
+                total = args.numrecipients
+                print(f" {count}/{total}", end="", flush=True)
+                
+                # If all receivers have received, print elapsed time
+                if count == total:
+                    first_time = seq_tracking[seq]['first_time']
+                    last_time = seq_tracking[seq]['last_time']
+                    elapsed = last_time - first_time
+                    print(f" (elapsed: {elapsed:0.2f}ms)", end="", flush=True)
 
         except KeyboardInterrupt:
             pass
