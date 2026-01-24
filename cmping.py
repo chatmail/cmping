@@ -130,7 +130,7 @@ class AccountMaker:
         account.start_io()
         self.online.append(account)
 
-    def get_relay_account(self, domain):
+    def get_relay_account(self, domain, timeout=60):
         # Try to find an existing account for this domain/IP
         for account in self.dc.get_all_accounts():
             addr = account.get_config("configured_addr")
@@ -141,12 +141,20 @@ class AccountMaker:
                     if account not in self.online:
                         break
         else:
-            print(f"# creating account on {domain}")
             account = self.dc.add_account()
             qr_url = create_qr_url(domain)
-            account.set_config_from_qr(qr_url)
+            try:
+                account.set_config_from_qr(qr_url)
+            except Exception as e:
+                print(f"✗ Failed to configure account on {domain}: {e}")
+                raise
 
-        self._add_online(account)
+        try:
+            self._add_online(account)
+        except Exception as e:
+            print(f"✗ Failed to bring account online for {domain}: {e}")
+            raise
+
         return account
 
 
@@ -156,11 +164,60 @@ def perform_ping(args):
     with Rpc(accounts_dir=accounts_dir) as rpc:
         dc = DeltaChat(rpc)
         maker = AccountMaker(dc)
-        sender = maker.get_relay_account(args.relay1)
-        receivers = [
-            maker.get_relay_account(args.relay2) for _ in range(args.numrecipients)
-        ]
-        maker.wait_all_online()
+
+        # Calculate total accounts needed
+        total_accounts = 1 + args.numrecipients
+        accounts_created = 0
+
+        # Create sender account with progress
+        print(
+            f"# Setting up accounts: {accounts_created}/{total_accounts}",
+            end="",
+            flush=True,
+        )
+        try:
+            sender = maker.get_relay_account(args.relay1)
+            accounts_created += 1
+            print(
+                f"\r# Setting up accounts: {accounts_created}/{total_accounts}",
+                end="",
+                flush=True,
+            )
+        except Exception as e:
+            print(f"\r✗ Failed to setup sender account on {args.relay1}: {e}")
+            raise SystemExit(1)
+
+        # Create receiver accounts with progress
+        receivers = []
+        for i in range(args.numrecipients):
+            try:
+                receiver = maker.get_relay_account(args.relay2)
+                receivers.append(receiver)
+                accounts_created += 1
+                print(
+                    f"\r# Setting up accounts: {accounts_created}/{total_accounts}",
+                    end="",
+                    flush=True,
+                )
+            except Exception as e:
+                print(
+                    f"\r✗ Failed to setup receiver account {i+1} on {args.relay2}: {e}"
+                )
+                raise SystemExit(1)
+
+        # Account setup complete
+        print(
+            f"\r# Setting up accounts: {accounts_created}/{total_accounts} - Complete!"
+        )
+
+        # Wait for all accounts to be online with timeout feedback
+        print("# Waiting for all accounts to be online...", end="", flush=True)
+        try:
+            maker.wait_all_online()
+            print(" Done!")
+        except Exception as e:
+            print(f"\n✗ Timeout or error waiting for accounts to be online: {e}")
+            raise SystemExit(1)
 
         # Create a group chat from sender and add all receivers
         group = sender.create_group("cmping")
