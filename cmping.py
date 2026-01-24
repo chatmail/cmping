@@ -129,14 +129,18 @@ class ProfileMaker:
             ac.wait_for_event(EventType.IMAP_INBOX_IDLE)
 
     def _add_online(self, profile):
+        # Call start_io() outside the lock to allow parallel execution
+        # This is the time-consuming operation that benefits from parallelization
         profile.start_io()
+        # Only lock when modifying the shared state
         with self.lock:
             self.online.append(profile)
 
     def get_relay_profile(self, domain):
         # Thread-safe profile lookup and creation
         with self.lock:
-            # Try to find an existing profile for this domain/IP
+            # Try to find an existing (cached) profile for this domain/IP
+            # that is not already online (to allow multiple profiles per domain)
             is_cached = False
             for profile in self.dc.get_all_accounts():
                 addr = profile.get_config("configured_addr")
@@ -145,9 +149,12 @@ class ProfileMaker:
                     addr_domain = addr.split("@")[1] if "@" in addr else None
                     if addr_domain == domain:
                         if profile not in self.online:
+                            # Found a cached profile that we can reuse
                             is_cached = True
                             break
+                        # Profile already online, continue looking for another one
             else:
+                # No cached profile found, create a fresh one
                 profile = self.dc.add_account()
                 qr_url = create_qr_url(domain)
                 try:
@@ -211,8 +218,9 @@ def perform_ping(args):
             """Setup a single receiver profile"""
             nonlocal profiles_setup, profiles_cached, profiles_created
             try:
-                # Each thread creates its own profile (cached or fresh)
-                # The ProfileMaker ensures each call returns a different profile
+                # Each thread gets a profile for the domain (either cached or fresh)
+                # If multiple cached profiles exist, different threads may get different ones
+                # If no cached profiles exist, new ones are created
                 receiver, is_cached = maker.get_relay_profile(args.relay2)
                 with receiver_lock:
                     receivers.append(receiver)
