@@ -90,15 +90,18 @@ class AccountMaker:
         account.start_io()
         self.online.append(account)
 
-    def _generate_username(self):
-        """Generate a 12-character alphanumeric lowercase username."""
-        ALPHANUMERIC = string.ascii_lowercase + string.digits
-        return "".join(random.choices(ALPHANUMERIC, k=12))
-
-    def _generate_password(self):
-        """Generate a 30-character alphanumeric password."""
-        ALPHANUMERIC = string.ascii_letters + string.digits
-        return "".join(random.choices(ALPHANUMERIC, k=30))
+    def _generate_credentials(self):
+        """Generate credentials for IP-based accounts.
+        
+        Returns:
+            tuple: (username, password) where username is 12 chars (a-z, 0-9)
+                   and password is 30 chars (A-Z, a-z, 0-9)
+        """
+        username_chars = string.ascii_lowercase + string.digits
+        password_chars = string.ascii_letters + string.digits
+        username = "".join(random.choices(username_chars, k=12))
+        password = "".join(random.choices(password_chars, k=30))
+        return username, password
 
     def _find_existing_account(self, domain_or_ip):
         """Find existing account for the given domain or IP address."""
@@ -124,8 +127,7 @@ class AccountMaker:
         
         if is_ip:
             # Create new account with dclogin scheme for IP addresses
-            username = self._generate_username()
-            password = self._generate_password()
+            username, password = self._generate_credentials()
             print(f"# creating account on {domain_or_ip} with username {username}")
             account = self.dc.add_account()
             
