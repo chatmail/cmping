@@ -101,21 +101,23 @@ def perform_ping(args):
         dc = DeltaChat(rpc)
         maker = AccountMaker(dc)
         sender = maker.get_relay_account(args.relay1)
-        receivers = [maker.get_relay_account(args.relay2) for _ in range(args.numrecipients)]
+        receivers = [
+            maker.get_relay_account(args.relay2) for _ in range(args.numrecipients)
+        ]
         maker.wait_all_online()
-        
+
         # Create a group chat from sender and add all receivers
         group = sender.create_group("cmping")
         for receiver in receivers:
             # Create a contact for the receiver account and add to group
             contact = sender.create_contact(receiver)
             group.add_contact(contact)
-        
+
         # Send an initial message to promote the group
         # This sends invitations to all members
         print("# promoting group chat by sending initial message")
         group.send_text("cmping group chat initialized")
-        
+
         # Wait for each receiver to receive the group invitation and accept it
         print("# waiting for receivers to join group")
         sender_addr = sender.get_config("addr")
@@ -133,17 +135,24 @@ def perform_ping(args):
                     sender_contact = msg.get_sender_contact()
                     sender_contact_snapshot = sender_contact.get_snapshot()
                     # Verify this is from the sender and is the group initialization message
-                    if sender_contact_snapshot.address == sender_addr and "cmping group chat initialized" in snapshot.text:
+                    if (
+                        sender_contact_snapshot.address == sender_addr
+                        and "cmping group chat initialized" in snapshot.text
+                    ):
                         chat_id = snapshot.chat_id
                         receiver_group = receiver.get_chat_by_id(chat_id)
                         # Accept the group chat
                         receiver_group.accept()
-                        print(f"# receiver {idx} ({receiver.get_config('addr')}) joined group")
+                        print(
+                            f"# receiver {idx} ({receiver.get_config('addr')}) joined group"
+                        )
                         break
                 # Continue waiting for the right message
             else:
                 # Timeout occurred
-                print(f"# WARNING: receiver {idx} did not join group within {timeout_seconds}s")
+                print(
+                    f"# WARNING: receiver {idx} did not join group within {timeout_seconds}s"
+                )
 
         pinger = Pinger(args, sender, group, receivers)
         received = {}
@@ -156,35 +165,45 @@ def perform_ping(args):
                 if seq not in received:
                     received[seq] = []
                 received[seq].append(ms_duration)
-                
+
                 # Track timing for this sequence
                 if seq not in seq_tracking:
                     seq_tracking[seq] = {
-                        'count': 0,
-                        'first_time': ms_duration,
-                        'last_time': ms_duration,
-                        'size': size
+                        "count": 0,
+                        "first_time": ms_duration,
+                        "last_time": ms_duration,
+                        "size": size,
                     }
-                seq_tracking[seq]['count'] += 1
-                seq_tracking[seq]['last_time'] = ms_duration
-                
+                seq_tracking[seq]["count"] += 1
+                seq_tracking[seq]["last_time"] = ms_duration
+
                 # Print new line for new sequence or first message
                 if current_seq != seq:
                     if current_seq is not None:
                         print()  # End previous line
                     # Start new line for this sequence
-                    print(f"{size} bytes ME -> {pinger.relay1} -> {pinger.relay2} -> ME seq={seq} time={ms_duration:0.2f}ms", end="", flush=True)
+                    print(
+                        f"{size} bytes ME -> {pinger.relay1} -> {pinger.relay2} -> ME seq={seq} time={ms_duration:0.2f}ms",
+                        end="",
+                        flush=True,
+                    )
                     current_seq = seq
-                
-                # Print N/M ratio
-                count = seq_tracking[seq]['count']
+
+                # Print N/M ratio with in-place update (spinning effect)
+                count = seq_tracking[seq]["count"]
                 total = args.numrecipients
+                # Calculate how many characters we need to overwrite from previous ratio
+                if count > 1:
+                    # Backspace over previous ratio to update in-place
+                    prev_count = count - 1
+                    prev_ratio_len = len(f" {prev_count}/{total}")
+                    print("\b" * prev_ratio_len, end="", flush=True)
                 print(f" {count}/{total}", end="", flush=True)
-                
+
                 # If all receivers have received, print elapsed time
                 if count == total:
-                    first_time = seq_tracking[seq]['first_time']
-                    last_time = seq_tracking[seq]['last_time']
+                    first_time = seq_tracking[seq]["first_time"]
+                    last_time = seq_tracking[seq]["last_time"]
                     elapsed = last_time - first_time
                     print(f" (elapsed: {elapsed:0.2f}ms)", end="", flush=True)
 
@@ -251,10 +270,10 @@ class Pinger:
         start_clock = time.time()
         # Track which sequence numbers have been received by which receiver
         received_by_receiver = {}
-        
+
         # Create a queue to collect events from all receivers
         event_queue = queue.Queue()
-        
+
         def receiver_thread(receiver_idx, receiver):
             """Thread function to listen to events from a single receiver"""
             while True:
@@ -265,20 +284,22 @@ class Pinger:
                     # If there's an error, put it in the queue
                     event_queue.put((receiver_idx, receiver, None))
                     break
-        
+
         # Start a thread for each receiver
         threads = []
         for idx, receiver in enumerate(self.receivers):
-            t = threading.Thread(target=receiver_thread, args=(idx, receiver), daemon=True)
+            t = threading.Thread(
+                target=receiver_thread, args=(idx, receiver), daemon=True
+            )
             t.start()
             threads.append(t)
-        
+
         while num_pending > 0:
             try:
                 receiver_idx, receiver, event = event_queue.get(timeout=1.0)
                 if event is None:
                     continue
-                    
+
                 if event.kind == EventType.INCOMING_MSG:
                     msg = receiver.get_message_by_id(event.msg_id)
                     text = msg.get_snapshot().text
@@ -300,7 +321,10 @@ class Pinger:
                     msg = receiver.get_message_by_id(event.msg_id)
                     text = msg.get_snapshot().text
                     print(f"Message failed: {text}")
-                elif event.kind in (EventType.INFO, EventType.WARNING) and self.args.verbose >= 1:
+                elif (
+                    event.kind in (EventType.INFO, EventType.WARNING)
+                    and self.args.verbose >= 1
+                ):
                     ms_now = (time.time() - start_clock) * 1000
                     print(f"INFO {ms_now:07.1f}ms: {event.msg}")
             except queue.Empty:
