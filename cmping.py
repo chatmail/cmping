@@ -123,6 +123,7 @@ class ProfileMaker:
         self.lock = threading.Lock()
 
     def wait_all_online(self):
+        # Read list length once at start (atomic operation in Python)
         total = len(self.online)
         online_count = 0
         
@@ -131,11 +132,12 @@ class ProfileMaker:
         
         print_progress()
         
+        # Make a copy to avoid issues with concurrent modifications
         remaining = list(self.online)
         while remaining:
             profile = remaining.pop()
             # Wait for events until profile comes online
-            # Timeout is handled by caller via try/except
+            # Timeout is handled by caller via try/except around wait_all_online()
             while True:
                 event = profile.wait_for_event()
                 if event.kind == EventType.IMAP_INBOX_IDLE:
