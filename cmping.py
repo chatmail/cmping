@@ -3,6 +3,7 @@ chatmail ping aka "cmping" transmits messages between relays.
 """
 
 import argparse
+import ipaddress
 import os
 import queue
 import random
@@ -10,6 +11,7 @@ import signal
 import string
 import threading
 import time
+import urllib.parse
 from statistics import stdev
 
 from deltachat_rpc_client import DeltaChat, EventType, Rpc
@@ -23,13 +25,13 @@ def main():
     parser.add_argument(
         "relay1",
         action="store",
-        help="chatmail relay domain",
+        help="chatmail relay domain or IP address",
     )
     parser.add_argument(
         "relay2",
         action="store",
         nargs="?",
-        help="chatmail relay domain (defaults to relay1 if not specified)",
+        help="chatmail relay domain or IP address (defaults to relay1 if not specified)",
     )
     parser.add_argument(
         "-c",
@@ -79,16 +81,61 @@ class AccountMaker:
         account.start_io()
         self.online.append(account)
 
-    def get_relay_account(self, domain):
-        for account in self.dc.get_all_accounts():
-            addr = account.get_config("configured_addr")
-            if addr is not None and addr.split("@")[1] == domain:
-                if account not in self.online:
-                    break
-        else:
-            print(f"# creating account on {domain}")
+    def _is_ip_address(self, host):
+        """Check if host is an IP address."""
+        try:
+            ipaddress.ip_address(host)
+            return True
+        except ValueError:
+            return False
+
+    def _generate_username(self):
+        """Generate a 12-character alphanumeric lowercase username."""
+        ALPHANUMERIC = string.ascii_lowercase + string.digits
+        return "".join(random.choices(ALPHANUMERIC, k=12))
+
+    def _generate_password(self):
+        """Generate a 30-character alphanumeric password."""
+        ALPHANUMERIC = string.ascii_letters + string.digits
+        return "".join(random.choices(ALPHANUMERIC, k=30))
+
+    def get_relay_account(self, domain_or_ip):
+        # Check if this is an IP address
+        is_ip = self._is_ip_address(domain_or_ip)
+        
+        if is_ip:
+            # For IP addresses, generate a new username and password
+            username = self._generate_username()
+            password = self._generate_password()
+            addr = f"{username}@{domain_or_ip}"
+            
+            # Check if we already have an account for this address
+            for account in self.dc.get_all_accounts():
+                existing_addr = account.get_config("configured_addr")
+                if existing_addr == addr:
+                    if account not in self.online:
+                        self._add_online(account)
+                        return account
+            
+            # Create new account with dclogin scheme
+            print(f"# creating account on {domain_or_ip} with username {username}")
             account = self.dc.add_account()
-            account.set_config_from_qr(f"dcaccount:{domain}")
+            
+            # Build dclogin URL with IP address
+            # Format: dclogin:username@ip/?p=password&v=1&ip=993&sp=465&ic=3&ss=default
+            qr_url = f"dclogin:{username}@{domain_or_ip}/?p={urllib.parse.quote(password)}&v=1&ip=993&sp=465&ic=3&ss=default"
+            account.set_config_from_qr(qr_url)
+        else:
+            # Original domain-based logic
+            for account in self.dc.get_all_accounts():
+                addr = account.get_config("configured_addr")
+                if addr is not None and addr.split("@")[1] == domain_or_ip:
+                    if account not in self.online:
+                        break
+            else:
+                print(f"# creating account on {domain_or_ip}")
+                account = self.dc.add_account()
+                account.set_config_from_qr(f"dcaccount:{domain_or_ip}")
 
         self._add_online(account)
         return account
