@@ -49,11 +49,11 @@ def main():
         "-v", dest="verbose", action="count", default=0, help="increase verbosity"
     )
     parser.add_argument(
-        "-r",
+        "-g",
         dest="numrecipients",
         type=int,
         default=1,
-        help="number of recipients (default 1)",
+        help="number of group recipients (default 1)",
     )
     args = parser.parse_args()
     if not args.relay2:
@@ -144,17 +144,32 @@ def perform_ping(args):
 
         pinger = Pinger(args, sender, group, receivers)
         received = {}
+        # Track dots printed for current sequence
+        current_seq = None
+        dots_printed = {}
         try:
             for seq, ms_duration, size, receiver_idx in pinger.receive():
-                print(
-                    f"{size} bytes ME -> {pinger.relay1} -> {pinger.relay2} -> ME seq={seq} receiver={receiver_idx} time={ms_duration:0.2f}ms"
-                )
                 if seq not in received:
                     received[seq] = []
                 received[seq].append(ms_duration)
+                
+                # Print new line for new sequence or first message
+                if current_seq != seq:
+                    if current_seq is not None:
+                        print()  # End previous line
+                    # Start new line for this sequence
+                    print(f"{size} bytes ME -> {pinger.relay1} -> {pinger.relay2} -> ME seq={seq} time={ms_duration:0.2f}ms ", end="", flush=True)
+                    current_seq = seq
+                    dots_printed[seq] = 1
+                else:
+                    # Print dot for additional receiver
+                    print(".", end="", flush=True)
+                    dots_printed[seq] = dots_printed.get(seq, 0) + 1
 
         except KeyboardInterrupt:
             pass
+        if current_seq is not None:
+            print()  # End last line
         print(f"--- {pinger.addr1} -> {pinger.receivers_addrs_str} statistics ---")
         print(
             f"{pinger.sent} transmitted, {pinger.received} received, {pinger.loss:.2f}% loss"
