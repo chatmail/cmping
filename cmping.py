@@ -66,6 +66,15 @@ def main():
     raise SystemExit(0 if pinger.received == expected_total else 1)
 
 
+def _is_ip_address(host):
+    """Check if host is an IP address."""
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
 class AccountMaker:
     def __init__(self, dc):
         self.dc = dc
@@ -81,14 +90,6 @@ class AccountMaker:
         account.start_io()
         self.online.append(account)
 
-    def _is_ip_address(self, host):
-        """Check if host is an IP address."""
-        try:
-            ipaddress.ip_address(host)
-            return True
-        except ValueError:
-            return False
-
     def _generate_username(self):
         """Generate a 12-character alphanumeric lowercase username."""
         ALPHANUMERIC = string.ascii_lowercase + string.digits
@@ -101,7 +102,7 @@ class AccountMaker:
 
     def get_relay_account(self, domain_or_ip):
         # Check if this is an IP address
-        is_ip = self._is_ip_address(domain_or_ip)
+        is_ip = _is_ip_address(domain_or_ip)
         
         if is_ip:
             # For IP addresses, check if we already have an account for this IP
