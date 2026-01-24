@@ -125,35 +125,44 @@ class ProfileMaker:
     def wait_all_online(self):
         total = len(self.online)
         online_count = 0
-        print(f"# Waiting for {total} profile(s) to come online: {online_count}/{total}", end="", flush=True)
+        
+        def print_progress():
+            print(f"\r# Waiting for {total} profile(s) to come online: {online_count}/{total}", end="", flush=True)
+        
+        print_progress()
         
         remaining = list(self.online)
         while remaining:
             profile = remaining.pop()
+            # Wait for events until profile comes online
+            # Timeout is handled by caller via try/except
             while True:
                 event = profile.wait_for_event()
                 if event.kind == EventType.IMAP_INBOX_IDLE:
                     online_count += 1
-                    print(f"\r# Waiting for {total} profile(s) to come online: {online_count}/{total}", end="", flush=True)
+                    print_progress()
                     break
                 elif event.kind == EventType.ERROR:
+                    # Log error but continue - profile setup may still succeed
                     print(f"\n✗ ERROR during profile setup: {event.msg}")
+                    print_progress()
                 elif event.kind == EventType.WARNING:
                     print(f"\n⚠ WARNING during profile setup: {event.msg}")
-                    print(f"# Waiting for {total} profile(s) to come online: {online_count}/{total}", end="", flush=True)
+                    print_progress()
         
         print()  # Final newline
 
     def _add_online(self, profile):
-        # Call start_io() outside the lock to allow parallel execution
+        # Call start_io() to bring profile online
         # This is the time-consuming operation that benefits from parallelization
         profile.start_io()
-        # Only lock when modifying the shared state
-        with self.lock:
-            self.online.append(profile)
+        # Python list.append() is atomic, no lock needed
+        self.online.append(profile)
 
     def get_relay_profile(self, domain):
-        # Thread-safe profile lookup and creation
+        # Lock needed to prevent multiple threads from selecting the same cached profile
+        # The check-then-act pattern (check if profile in online, then use it) requires atomicity
+        # All RPC calls (get_all_accounts, add_account, set_config_from_qr) are thread-safe on server side
         with self.lock:
             # Try to find an existing (cached) profile for this domain/IP
             # that is not already online (to allow multiple profiles per domain)
