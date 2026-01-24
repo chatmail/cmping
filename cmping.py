@@ -103,10 +103,17 @@ def perform_ping(args):
         sender = maker.get_relay_account(args.relay1)
         receivers = [maker.get_relay_account(args.relay2) for _ in range(args.numrecipients)]
         maker.wait_all_online()
+        
+        # Create a group chat from sender and add all receivers
+        group = sender.create_group("cmping")
+        for receiver in receivers:
+            group.add_contact(receiver.get_config("addr"))
+        
+        # Each receiver needs to accept the group chat
         for receiver in receivers:
             _ = receiver.create_chat(sender)
 
-        pinger = Pinger(args, sender, receivers)
+        pinger = Pinger(args, sender, group, receivers)
         received = {}
         try:
             for seq, ms_duration, size, receiver_idx in pinger.receive():
@@ -136,9 +143,10 @@ def perform_ping(args):
 
 
 class Pinger:
-    def __init__(self, args, sender, receivers):
+    def __init__(self, args, sender, group, receivers):
         self.args = args
         self.sender = sender
+        self.group = group
         self.receivers = receivers
         self.addr1 = sender.get_config("addr")
         self.receivers_addrs = [receiver.get_config("addr") for receiver in receivers]
@@ -147,7 +155,7 @@ class Pinger:
         self.relay2 = self.receivers_addrs[0].split("@")[1]
 
         print(
-            f"CMPING {self.relay1}({self.addr1}) -> {self.relay2}({self.receivers_addrs_str}) count={args.count} interval={args.interval}s numrecipients={args.numrecipients}"
+            f"CMPING {self.relay1}({self.addr1}) -> {self.relay2}(group with {len(receivers)} members: {self.receivers_addrs_str}) count={args.count} interval={args.interval}s"
         )
         ALPHANUMERIC = string.ascii_lowercase + string.digits
         self.tx = "".join(random.choices(ALPHANUMERIC, k=30))
@@ -162,11 +170,10 @@ class Pinger:
         return 1 if expected_total == 0 else (1 - self.received / expected_total) * 100
 
     def send_pings(self):
-        chats = [self.sender.create_chat(receiver) for receiver in self.receivers]
+        # Send to the group chat (single message to all recipients)
         for seq in range(self.args.count):
             text = f"{self.tx} {time.time():.4f} {seq:17}"
-            for chat in chats:
-                chat.send_text(text)
+            self.group.send_text(text)
             self.sent += 1
             time.sleep(self.args.interval)
         # we sent all pings, let's wait a bit, then force quit if main didn't finish
