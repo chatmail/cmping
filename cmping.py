@@ -129,8 +129,11 @@ def perform_ping(args):
                 if event.kind == EventType.INCOMING_MSG:
                     msg = receiver.get_message_by_id(event.msg_id)
                     snapshot = msg.get_snapshot()
+                    # Get sender contact and check if it's from our sender
+                    sender_contact = msg.get_sender_contact()
+                    sender_contact_snapshot = sender_contact.get_snapshot()
                     # Verify this is from the sender and is the group initialization message
-                    if snapshot.sender_addr == sender_addr and "cmping group chat initialized" in snapshot.text:
+                    if sender_contact_snapshot.address == sender_addr and "cmping group chat initialized" in snapshot.text:
                         chat_id = snapshot.chat_id
                         receiver_group = receiver.get_chat_by_id(chat_id)
                         # Accept the group chat
