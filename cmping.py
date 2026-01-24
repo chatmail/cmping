@@ -144,9 +144,8 @@ def perform_ping(args):
 
         pinger = Pinger(args, sender, group, receivers)
         received = {}
-        # Track dots printed for current sequence
+        # Track current sequence for output formatting
         current_seq = None
-        dots_printed = {}
         try:
             for seq, ms_duration, size, receiver_idx in pinger.receive():
                 if seq not in received:
@@ -160,11 +159,9 @@ def perform_ping(args):
                     # Start new line for this sequence
                     print(f"{size} bytes ME -> {pinger.relay1} -> {pinger.relay2} -> ME seq={seq} time={ms_duration:0.2f}ms ", end="", flush=True)
                     current_seq = seq
-                    dots_printed[seq] = 1
                 else:
                     # Print dot for additional receiver
                     print(".", end="", flush=True)
-                    dots_printed[seq] = dots_printed.get(seq, 0) + 1
 
         except KeyboardInterrupt:
             pass
