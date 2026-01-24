@@ -131,11 +131,15 @@ class AccountMaker:
         self.online.append(account)
 
     def get_relay_account(self, domain):
+        # Try to find an existing account for this domain/IP
         for account in self.dc.get_all_accounts():
             addr = account.get_config("configured_addr")
-            if addr is not None and addr.split("@")[1] == domain:
-                if account not in self.online:
-                    break
+            if addr is not None:
+                # Extract the domain/IP from the configured address
+                addr_domain = addr.split("@")[1] if "@" in addr else None
+                if addr_domain == domain:
+                    if account not in self.online:
+                        break
         else:
             print(f"# creating account on {domain}")
             account = self.dc.add_account()
