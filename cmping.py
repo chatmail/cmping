@@ -120,6 +120,7 @@ class ProfileMaker:
     def __init__(self, dc):
         self.dc = dc
         self.online = []
+        self.lock = threading.Lock()
 
     def wait_all_online(self):
         remaining = list(self.online)
@@ -129,29 +130,34 @@ class ProfileMaker:
 
     def _add_online(self, profile):
         profile.start_io()
-        self.online.append(profile)
+        with self.lock:
+            self.online.append(profile)
 
     def get_relay_profile(self, domain):
-        # Try to find an existing profile for this domain/IP
-        is_cached = False
-        for profile in self.dc.get_all_accounts():
-            addr = profile.get_config("configured_addr")
-            if addr is not None:
-                # Extract the domain/IP from the configured address
-                addr_domain = addr.split("@")[1] if "@" in addr else None
-                if addr_domain == domain:
-                    if profile not in self.online:
-                        is_cached = True
-                        break
-        else:
-            profile = self.dc.add_account()
-            qr_url = create_qr_url(domain)
-            try:
-                profile.set_config_from_qr(qr_url)
-            except Exception as e:
-                print(f"✗ Failed to configure profile on {domain}: {e}")
-                raise
+        # Thread-safe profile lookup and creation
+        with self.lock:
+            # Try to find an existing profile for this domain/IP
+            is_cached = False
+            for profile in self.dc.get_all_accounts():
+                addr = profile.get_config("configured_addr")
+                if addr is not None:
+                    # Extract the domain/IP from the configured address
+                    addr_domain = addr.split("@")[1] if "@" in addr else None
+                    if addr_domain == domain:
+                        if profile not in self.online:
+                            is_cached = True
+                            break
+            else:
+                profile = self.dc.add_account()
+                qr_url = create_qr_url(domain)
+                try:
+                    profile.set_config_from_qr(qr_url)
+                except Exception as e:
+                    print(f"✗ Failed to configure profile on {domain}: {e}")
+                    raise
 
+        # Bring profile online outside the lock to allow parallelization
+        # start_io() is the time-consuming operation we want to parallelize
         try:
             self._add_online(profile)
         except Exception as e:
@@ -203,11 +209,13 @@ def perform_ping(args):
 
         def setup_receiver_profile(i):
             """Setup a single receiver profile"""
+            nonlocal profiles_setup, profiles_cached, profiles_created
             try:
+                # Each thread creates its own profile (cached or fresh)
+                # The ProfileMaker ensures each call returns a different profile
                 receiver, is_cached = maker.get_relay_profile(args.relay2)
                 with receiver_lock:
                     receivers.append(receiver)
-                    nonlocal profiles_setup, profiles_cached, profiles_created
                     profiles_setup += 1
                     if is_cached:
                         profiles_cached += 1
