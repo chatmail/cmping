@@ -3,6 +3,7 @@ chatmail ping aka "cmping" transmits messages between relays.
 """
 
 import argparse
+import ipaddress
 import os
 import queue
 import random
@@ -10,26 +11,76 @@ import signal
 import string
 import threading
 import time
+import urllib.parse
 from statistics import stdev
 
 from deltachat_rpc_client import DeltaChat, EventType, Rpc
 from xdg_base_dirs import xdg_cache_home
 
 
+def is_ip_address(host):
+    """Check if the given host is an IP address."""
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def generate_credentials():
+    """Generate random username and password for IP-based login.
+
+    Returns:
+        tuple: (username, password) where username is 12 chars and password is 20 chars
+    """
+    chars = string.ascii_lowercase + string.digits
+    username = "".join(random.choices(chars, k=12))
+    password = "".join(random.choices(chars, k=20))
+    return username, password
+
+
+def create_qr_url(domain_or_ip):
+    """Create either a dcaccount or dclogin URL based on input type.
+
+    Args:
+        domain_or_ip: Either a domain name or an IP address
+
+    Returns:
+        str: Either dcaccount:domain or dclogin:username@ip/?p=password&v=1&ip=993&sp=465&ic=3&ss=default
+    """
+    if is_ip_address(domain_or_ip):
+        # Generate credentials for IP address
+        username, password = generate_credentials()
+
+        # Build dclogin URL according to spec
+        # dclogin:username@ip/?p=password&v=1&ip=993&sp=465&ic=3&ss=default
+        encoded_password = urllib.parse.quote(password, safe="")
+
+        # Format: dclogin:username@host/?query
+        qr_url = (
+            f"dclogin:{username}@{domain_or_ip}/?"
+            f"p={encoded_password}&v=1&ip=993&sp=465&ic=3&ss=default"
+        )
+        return qr_url
+    else:
+        # Use dcaccount for domain names
+        return f"dcaccount:{domain_or_ip}"
+
+
 def main():
-    """Ping between addresses of specified chatmail relay domains."""
+    """Ping between addresses of specified chatmail relay domains or IP addresses."""
 
     parser = argparse.ArgumentParser(description=main.__doc__)
     parser.add_argument(
         "relay1",
         action="store",
-        help="chatmail relay domain",
+        help="chatmail relay domain or IP address",
     )
     parser.add_argument(
         "relay2",
         action="store",
         nargs="?",
-        help="chatmail relay domain (defaults to relay1 if not specified)",
+        help="chatmail relay domain or IP address (defaults to relay1 if not specified)",
     )
     parser.add_argument(
         "-c",
@@ -88,7 +139,8 @@ class AccountMaker:
         else:
             print(f"# creating account on {domain}")
             account = self.dc.add_account()
-            account.set_config_from_qr(f"dcaccount:{domain}")
+            qr_url = create_qr_url(domain)
+            account.set_config_from_qr(qr_url)
 
         self._add_online(account)
         return account
