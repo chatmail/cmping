@@ -151,8 +151,7 @@ class Pinger:
         )
         ALPHANUMERIC = string.ascii_lowercase + string.digits
         self.tx = "".join(random.choices(ALPHANUMERIC, k=30))
-        t = threading.Thread(target=self.send_pings)
-        t.setDaemon(True)
+        t = threading.Thread(target=self.send_pings, daemon=True)
         self.sent = 0
         self.received = 0
         t.start()
@@ -197,8 +196,7 @@ class Pinger:
         # Start a thread for each receiver
         threads = []
         for idx, receiver in enumerate(self.receivers):
-            t = threading.Thread(target=receiver_thread, args=(idx, receiver))
-            t.setDaemon(True)
+            t = threading.Thread(target=receiver_thread, args=(idx, receiver), daemon=True)
             t.start()
             threads.append(t)
         
