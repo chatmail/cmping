@@ -100,23 +100,30 @@ class AccountMaker:
         ALPHANUMERIC = string.ascii_letters + string.digits
         return "".join(random.choices(ALPHANUMERIC, k=30))
 
+    def _find_existing_account(self, domain_or_ip):
+        """Find existing account for the given domain or IP address."""
+        for account in self.dc.get_all_accounts():
+            addr = account.get_config("configured_addr")
+            if addr is not None:
+                host_part = addr.split("@")[1] if "@" in addr else None
+                if host_part == domain_or_ip:
+                    return account
+        return None
+
     def get_relay_account(self, domain_or_ip):
-        # Check if this is an IP address
+        # Check if we already have an account for this domain or IP
+        account = self._find_existing_account(domain_or_ip)
+        
+        if account is not None:
+            if account not in self.online:
+                self._add_online(account)
+            return account
+        
+        # No existing account found, create a new one
         is_ip = _is_ip_address(domain_or_ip)
         
         if is_ip:
-            # For IP addresses, check if we already have an account for this IP
-            # (check the host part of the configured address)
-            for account in self.dc.get_all_accounts():
-                addr = account.get_config("configured_addr")
-                if addr is not None:
-                    host_part = addr.split("@")[1] if "@" in addr else None
-                    if host_part == domain_or_ip:
-                        if account not in self.online:
-                            self._add_online(account)
-                            return account
-            
-            # Create new account with dclogin scheme
+            # Create new account with dclogin scheme for IP addresses
             username = self._generate_username()
             password = self._generate_password()
             print(f"# creating account on {domain_or_ip} with username {username}")
@@ -131,16 +138,10 @@ class AccountMaker:
             qr_url = f"dclogin:{username}@{domain_or_ip}/?p={urllib.parse.quote(password)}&v=1&ip={IMAP_PORT}&sp={SMTP_PORT}&ic={CERT_CHECKS}&ss={SMTP_SECURITY}"
             account.set_config_from_qr(qr_url)
         else:
-            # Original domain-based logic
-            for account in self.dc.get_all_accounts():
-                addr = account.get_config("configured_addr")
-                if addr is not None and addr.split("@")[1] == domain_or_ip:
-                    if account not in self.online:
-                        break
-            else:
-                print(f"# creating account on {domain_or_ip}")
-                account = self.dc.add_account()
-                account.set_config_from_qr(f"dcaccount:{domain_or_ip}")
+            # Create new account with dcaccount scheme for domains
+            print(f"# creating account on {domain_or_ip}")
+            account = self.dc.add_account()
+            account.set_config_from_qr(f"dcaccount:{domain_or_ip}")
 
         self._add_online(account)
         return account
