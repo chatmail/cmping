@@ -123,10 +123,26 @@ class ProfileMaker:
         self.lock = threading.Lock()
 
     def wait_all_online(self):
+        total = len(self.online)
+        online_count = 0
+        print(f"# Waiting for {total} profile(s) to come online: {online_count}/{total}", end="", flush=True)
+        
         remaining = list(self.online)
         while remaining:
-            ac = remaining.pop()
-            ac.wait_for_event(EventType.IMAP_INBOX_IDLE)
+            profile = remaining.pop()
+            while True:
+                event = profile.wait_for_event()
+                if event.kind == EventType.IMAP_INBOX_IDLE:
+                    online_count += 1
+                    print(f"\r# Waiting for {total} profile(s) to come online: {online_count}/{total}", end="", flush=True)
+                    break
+                elif event.kind == EventType.ERROR:
+                    print(f"\n✗ ERROR during profile setup: {event.msg}")
+                elif event.kind == EventType.WARNING:
+                    print(f"\n⚠ WARNING during profile setup: {event.msg}")
+                    print(f"# Waiting for {total} profile(s) to come online: {online_count}/{total}", end="", flush=True)
+        
+        print()  # Final newline
 
     def _add_online(self, profile):
         # Call start_io() outside the lock to allow parallel execution
@@ -260,11 +276,9 @@ def perform_ping(args):
             f"\r# Setting up profiles: {profiles_setup}/{total_profiles} (cached: {profiles_cached}, creating: {profiles_created}) - Complete!"
         )
 
-        # Wait for all profiles to be online with timeout feedback
-        print("# Waiting for all profiles to be online...", end="", flush=True)
+        # Wait for all profiles to come online with progress
         try:
             maker.wait_all_online()
-            print(" Done!")
         except Exception as e:
             print(f"\n✗ Timeout or error waiting for profiles to be online: {e}")
             sys.exit(1)
