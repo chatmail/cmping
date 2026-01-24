@@ -118,21 +118,29 @@ def perform_ping(args):
         
         # Wait for each receiver to receive the group invitation and accept it
         print("# waiting for receivers to join group")
+        sender_addr = sender.get_config("addr")
         for idx, receiver in enumerate(receivers):
             # Wait for incoming message (the group invitation/first message)
-            while True:
+            # Set a reasonable timeout
+            timeout_seconds = 30
+            start_time = time.time()
+            while time.time() - start_time < timeout_seconds:
                 event = receiver.wait_for_event()
                 if event.kind == EventType.INCOMING_MSG:
                     msg = receiver.get_message_by_id(event.msg_id)
-                    chat_id = msg.get_snapshot().chat_id
-                    receiver_group = receiver.get_chat_by_id(chat_id)
-                    # Accept the group chat
-                    receiver_group.accept()
-                    print(f"# receiver {idx} ({receiver.get_config('addr')}) joined group")
-                    break
-                elif event.kind in (EventType.INFO, EventType.WARNING, EventType.ERROR):
-                    # Skip non-message events
-                    continue
+                    snapshot = msg.get_snapshot()
+                    # Verify this is from the sender and is the group initialization message
+                    if snapshot.sender_addr == sender_addr and "cmping group chat initialized" in snapshot.text:
+                        chat_id = snapshot.chat_id
+                        receiver_group = receiver.get_chat_by_id(chat_id)
+                        # Accept the group chat
+                        receiver_group.accept()
+                        print(f"# receiver {idx} ({receiver.get_config('addr')}) joined group")
+                        break
+                # Continue waiting for the right message
+            else:
+                # Timeout occurred
+                print(f"# WARNING: receiver {idx} did not join group within {timeout_seconds}s")
 
         pinger = Pinger(args, sender, group, receivers)
         received = {}
