@@ -9,6 +9,7 @@ import queue
 import random
 import signal
 import string
+import sys
 import threading
 import time
 import urllib.parse
@@ -130,7 +131,7 @@ class AccountMaker:
         account.start_io()
         self.online.append(account)
 
-    def get_relay_account(self, domain, timeout=60):
+    def get_relay_account(self, domain):
         # Try to find an existing account for this domain/IP
         for account in self.dc.get_all_accounts():
             addr = account.get_config("configured_addr")
@@ -185,7 +186,7 @@ def perform_ping(args):
             )
         except Exception as e:
             print(f"\r✗ Failed to setup sender account on {args.relay1}: {e}")
-            raise SystemExit(1)
+            sys.exit(1)
 
         # Create receiver accounts with progress
         receivers = []
@@ -203,7 +204,7 @@ def perform_ping(args):
                 print(
                     f"\r✗ Failed to setup receiver account {i+1} on {args.relay2}: {e}"
                 )
-                raise SystemExit(1)
+                sys.exit(1)
 
         # Account setup complete
         print(
@@ -217,7 +218,7 @@ def perform_ping(args):
             print(" Done!")
         except Exception as e:
             print(f"\n✗ Timeout or error waiting for accounts to be online: {e}")
-            raise SystemExit(1)
+            sys.exit(1)
 
         # Create a group chat from sender and add all receivers
         group = sender.create_group("cmping")
