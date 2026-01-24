@@ -111,9 +111,28 @@ def perform_ping(args):
             contact = sender.create_contact(receiver)
             group.add_contact(contact)
         
-        # Note: The group is in "unpromoted" state until first message is sent.
-        # When we send the first ping, it will promote the group and send invitations.
-        # Receivers will automatically see and accept messages in the group.
+        # Send an initial message to promote the group
+        # This sends invitations to all members
+        print("# promoting group chat by sending initial message")
+        group.send_text("cmping group chat initialized")
+        
+        # Wait for each receiver to receive the group invitation and accept it
+        print("# waiting for receivers to join group")
+        for idx, receiver in enumerate(receivers):
+            # Wait for incoming message (the group invitation/first message)
+            while True:
+                event = receiver.wait_for_event()
+                if event.kind == EventType.INCOMING_MSG:
+                    msg = receiver.get_message_by_id(event.msg_id)
+                    chat_id = msg.get_snapshot().chat_id
+                    receiver_group = receiver.get_chat_by_id(chat_id)
+                    # Accept the group chat
+                    receiver_group.accept()
+                    print(f"# receiver {idx} ({receiver.get_config('addr')}) joined group")
+                    break
+                elif event.kind in (EventType.INFO, EventType.WARNING, EventType.ERROR):
+                    # Skip non-message events
+                    continue
 
         pinger = Pinger(args, sender, group, receivers)
         received = {}
