@@ -212,7 +212,7 @@ def create_and_promote_group(sender, receivers):
         group.add_contact(contact)
 
     # Send an initial message to promote the group
-    # This sends invitations to all members (no print here, combined with waiting)
+    # This sends invitations to all members; progress is shown in wait_for_receivers_to_join()
     group.send_text("cmping group chat initialized")
 
     return group
@@ -304,11 +304,11 @@ def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
             elif event_type == "error":
                 if args.verbose >= 1:
                     print(f"\n✗ ERROR during group joining for receiver {idx}: {data}")
-                    print(
-                        f"# Waiting for receivers to come online {len(joined_receivers)}/{total_receivers}",
-                        end="",
-                        flush=True,
-                    )
+                print(
+                    f"\r# Waiting for receivers to come online {len(joined_receivers)}/{total_receivers}",
+                    end="",
+                    flush=True,
+                )
             elif event_type == "timeout":
                 print(
                     f"\n# WARNING: receiver {idx} did not join group within {timeout_seconds}s"
