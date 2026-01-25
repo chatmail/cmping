@@ -248,10 +248,10 @@ def perform_ping(args):
         joined_receivers = set()
         receiver_threads_queue = queue.Queue()
         
-        def wait_for_receiver_join(idx, receiver):
+        def wait_for_receiver_join(idx, receiver, deadline):
             """Thread function to wait for a single receiver to join"""
             try:
-                while time.time() - start_time < timeout_seconds:
+                while time.time() < deadline:
                     event = receiver.wait_for_event()
                     if event.kind == EventType.INCOMING_MSG:
                         msg = receiver.get_message_by_id(event.msg_id)
@@ -275,19 +275,20 @@ def perform_ping(args):
                 receiver_threads_queue.put(("exception", idx, str(e)))
         
         # Start a thread for each receiver
+        deadline = start_time + timeout_seconds
         threads = []
         for idx, receiver in enumerate(receivers):
             t = threading.Thread(
-                target=wait_for_receiver_join, args=(idx, receiver), daemon=True
+                target=wait_for_receiver_join, args=(idx, receiver, deadline), daemon=False
             )
             t.start()
             threads.append(t)
         
         # Monitor progress and show spinner
         total_receivers = len(receivers)
-        while len(joined_receivers) < total_receivers and time.time() - start_time < timeout_seconds:
+        while len(joined_receivers) < total_receivers and time.time() < deadline:
             try:
-                event_type, idx, data = receiver_threads_queue.get(timeout=0.1)
+                event_type, idx, data = receiver_threads_queue.get(timeout=0.5)
                 if event_type == "joined":
                     joined_receivers.add(idx)
                     print(f"\r# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
@@ -303,6 +304,10 @@ def perform_ping(args):
             except queue.Empty:
                 # Update spinner even when no events
                 print(f"\r# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
+        
+        # Wait for threads to complete with a short timeout
+        for t in threads:
+            t.join(timeout=1.0)
         
         # Final status
         print(f"\r# waiting for receivers to join group {len(joined_receivers)}/{total_receivers} - Complete!")
