@@ -19,6 +19,14 @@ from deltachat_rpc_client import DeltaChat, EventType, Rpc
 from xdg_base_dirs import xdg_cache_home
 
 
+def log_event_verbose(event, addr, verbose_level=3):
+    """Helper function to log events at specified verbose level."""
+    if hasattr(event, "msg") and event.msg:
+        print(f"  [{addr}] {event.kind}: {event.msg}")
+    else:
+        print(f"  [{addr}] {event.kind}")
+
+
 def is_ip_address(host):
     """Check if the given host is an IP address."""
     try:
@@ -122,6 +130,14 @@ class AccountMaker:
         self.online = []
         self.verbose = verbose
 
+    def _log_event(self, event, addr):
+        """Helper method to log events at verbose level 3."""
+        if self.verbose >= 3:
+            if hasattr(event, "msg") and event.msg:
+                print(f"  {event.kind}: {event.msg} [{addr}]")
+            else:
+                print(f"  {event.kind} [{addr}]")
+
     def wait_all_online(self):
         remaining = list(self.online)
         while remaining:
@@ -138,10 +154,7 @@ class AccountMaker:
                 elif self.verbose >= 3:
                     # Show all events during online phase when verbose level 3
                     addr = ac.get_config("addr")
-                    if hasattr(event, "msg") and event.msg:
-                        print(f"  {event.kind}: {event.msg} [{addr}]")
-                    else:
-                        print(f"  {event.kind} [{addr}]")
+                    self._log_event(event, addr)
 
     def _add_online(self, account):
         if self.verbose >= 3:
@@ -233,7 +246,7 @@ def setup_accounts(args, maker):
             sys.exit(1)
 
     # Profile setup complete
-    print("\r# Setting up profiles... Done!                    ")
+    print("\r# Setting up profiles... Done!")
 
     return sender, receivers
 
@@ -305,10 +318,7 @@ def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
                 if args.verbose >= 3:
                     # Log all events during group joining phase
                     receiver_addr = receiver.get_config("addr")
-                    if hasattr(event, "msg") and event.msg:
-                        print(f"  [{receiver_addr}] {event.kind}: {event.msg}")
-                    else:
-                        print(f"  [{receiver_addr}] {event.kind}")
+                    log_event_verbose(event, receiver_addr)
 
                 if event.kind == EventType.INCOMING_MSG:
                     msg = receiver.get_message_by_id(event.msg_id)
@@ -631,8 +641,9 @@ class Pinger:
                     elif self.args.verbose >= 3:
                         # Log non-ping messages at verbose level 3
                         receiver_addr = self.receivers_addrs[receiver_idx]
+                        ellipsis = "..." if len(text) > 50 else ""
                         print(
-                            f"  [{receiver_addr}] INCOMING_MSG (non-ping): {text[:50]}"
+                            f"  [{receiver_addr}] INCOMING_MSG (non-ping): {text[:50]}{ellipsis}"
                         )
                 elif event.kind == EventType.ERROR and self.args.verbose >= 1:
                     print(f"✗ ERROR: {event.msg}")
@@ -649,10 +660,7 @@ class Pinger:
                 elif self.args.verbose >= 3:
                     # Log all other events at verbose level 3
                     receiver_addr = self.receivers_addrs[receiver_idx]
-                    if hasattr(event, "msg") and event.msg:
-                        print(f"  [{receiver_addr}] {event.kind}: {event.msg}")
-                    else:
-                        print(f"  [{receiver_addr}] {event.kind}")
+                    log_event_verbose(event, receiver_addr)
             except queue.Empty:
                 # Timeout occurred, check if we should continue
                 continue
