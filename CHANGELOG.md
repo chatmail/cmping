@@ -1,6 +1,30 @@
 
 # cmping changelog 
 
+## 0.14.0
+
+### Features
+
+- Add comprehensive error event logging with `-v` flag
+  - Error events during account setup and configuration are now logged
+  - Error events during group joining phase are displayed
+  - Error and failed message events during ping operations are shown
+  - All error messages use consistent ✗ prefix for easy identification
+
+- Concurrent receiver joining with live progress indicator
+  - Changed from sequential to parallel receiver joining using threads
+  - Shows real-time N/M progress spinner (e.g., "# waiting for receivers to join group 2/5")
+  - Significantly faster group setup with multiple receivers
+  - Improved timeout and error handling per receiver
+
+### Improvements
+
+- Refactored code structure for better maintainability
+  - Extracted `setup_accounts()` function for account creation
+  - Extracted `create_and_promote_group()` function for group management
+  - Extracted `wait_for_receivers_to_join()` function for concurrent joining
+  - Main `perform_ping()` function is now cleaner and easier to follow
+
 ## 0.13.0
 
 ### Features
