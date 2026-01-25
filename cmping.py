@@ -136,17 +136,6 @@ class AccountMaker:
     def _add_online(self, account):
         account.start_io()
         self.online.append(account)
-        # Listen for error events during initial connection if verbose
-        if self.verbose >= 1:
-            # Process any immediate error events
-            while True:
-                try:
-                    event = account.wait_for_event(timeout=0.1)
-                    if event.kind == EventType.ERROR:
-                        print(f"✗ ERROR during account setup: {event.msg}")
-                except Exception:
-                    # No more events or timeout
-                    break
 
     def get_relay_account(self, domain):
         # Try to find an existing account for this domain/IP
