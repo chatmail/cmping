@@ -1,6 +1,17 @@
 
 # cmping changelog 
 
+## 0.15.0
+
+### Improvements
+
+- Simplified progress display with cleaner UI
+  - Account setup now shows a single line: "# Setting up accounts... Done!"
+  - Account online waiting shows: "# Waiting for accounts to be online... Done!"
+  - Combined "promoting group chat" and "waiting for receivers" into single line: "# Waiting for receivers to come online N/M"
+  - CMPING line now shows only the number of receivers instead of listing all addresses: "group with N receivers"
+  - In verbose mode (`-v`), all receiver addresses are printed after they come online
+
 ## 0.14.0
 
 ### Features

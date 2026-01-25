@@ -173,44 +173,27 @@ def setup_accounts(args, maker):
     """
     # Calculate total accounts needed
     total_accounts = 1 + args.numrecipients
-    accounts_created = 0
 
-    # Create sender account with progress
-    print(
-        f"# Setting up accounts: {accounts_created}/{total_accounts}",
-        end="",
-        flush=True,
-    )
+    # Create sender and receiver accounts with spinner
+    print("# Setting up accounts...", end="", flush=True)
     try:
         sender = maker.get_relay_account(args.relay1)
-        accounts_created += 1
-        print(
-            f"\r# Setting up accounts: {accounts_created}/{total_accounts}",
-            end="",
-            flush=True,
-        )
     except Exception as e:
         print(f"\r✗ Failed to setup sender account on {args.relay1}: {e}")
         sys.exit(1)
 
-    # Create receiver accounts with progress
+    # Create receiver accounts
     receivers = []
     for i in range(args.numrecipients):
         try:
             receiver = maker.get_relay_account(args.relay2)
             receivers.append(receiver)
-            accounts_created += 1
-            print(
-                f"\r# Setting up accounts: {accounts_created}/{total_accounts}",
-                end="",
-                flush=True,
-            )
         except Exception as e:
             print(f"\r✗ Failed to setup receiver account {i+1} on {args.relay2}: {e}")
             sys.exit(1)
 
     # Account setup complete
-    print(f"\r# Setting up accounts: {accounts_created}/{total_accounts} - Complete!")
+    print("\r# Setting up accounts... Done!")
 
     return sender, receivers
 
@@ -229,8 +212,7 @@ def create_and_promote_group(sender, receivers):
         group.add_contact(contact)
 
     # Send an initial message to promote the group
-    # This sends invitations to all members
-    print("# promoting group chat by sending initial message")
+    # This sends invitations to all members (no print here, combined with waiting)
     group.send_text("cmping group chat initialized")
 
     return group
@@ -248,12 +230,13 @@ def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
     Returns:
         int: Number of receivers that successfully joined
     """
-    print("# waiting for receivers to join group", end="", flush=True)
+    print("# Waiting for receivers to come online", end="", flush=True)
     sender_addr = sender.get_config("addr")
     start_time = time.time()
 
     # Track which receivers have joined
     joined_receivers = set()
+    joined_addrs = []  # Track addresses in order they joined
     receiver_threads_queue = queue.Queue()
 
     def wait_for_receiver_join(idx, receiver, deadline):
@@ -312,38 +295,40 @@ def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
             event_type, idx, data = receiver_threads_queue.get(timeout=0.5)
             if event_type == "joined":
                 joined_receivers.add(idx)
+                joined_addrs.append(data)  # Track the address
                 print(
-                    f"\r# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}",
+                    f"\r# Waiting for receivers to come online {len(joined_receivers)}/{total_receivers}",
                     end="",
                     flush=True,
                 )
             elif event_type == "error":
-                print(f"\n✗ ERROR during group joining for receiver {idx}: {data}")
-                print(
-                    f"# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}",
-                    end="",
-                    flush=True,
-                )
+                if args.verbose >= 1:
+                    print(f"\n✗ ERROR during group joining for receiver {idx}: {data}")
+                    print(
+                        f"# Waiting for receivers to come online {len(joined_receivers)}/{total_receivers}",
+                        end="",
+                        flush=True,
+                    )
             elif event_type == "timeout":
                 print(
                     f"\n# WARNING: receiver {idx} did not join group within {timeout_seconds}s"
                 )
                 print(
-                    f"# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}",
+                    f"# Waiting for receivers to come online {len(joined_receivers)}/{total_receivers}",
                     end="",
                     flush=True,
                 )
             elif event_type == "exception":
                 print(f"\n# ERROR: receiver {idx} encountered exception: {data}")
                 print(
-                    f"# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}",
+                    f"# Waiting for receivers to come online {len(joined_receivers)}/{total_receivers}",
                     end="",
                     flush=True,
                 )
         except queue.Empty:
             # Update spinner even when no events
             print(
-                f"\r# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}",
+                f"\r# Waiting for receivers to come online {len(joined_receivers)}/{total_receivers}",
                 end="",
                 flush=True,
             )
@@ -354,8 +339,12 @@ def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
 
     # Final status
     print(
-        f"\r# waiting for receivers to join group {len(joined_receivers)}/{total_receivers} - Complete!"
+        f"\r# Waiting for receivers to come online {len(joined_receivers)}/{total_receivers} - Complete!"
     )
+
+    # In verbose mode, print all receiver addresses
+    if args.verbose >= 1 and joined_addrs:
+        print(f"# Receivers online: {', '.join(joined_addrs)}")
 
     # Check if all receivers joined
     if len(joined_receivers) < total_receivers:
@@ -377,7 +366,7 @@ def perform_ping(args):
         sender, receivers = setup_accounts(args, maker)
 
         # Wait for all accounts to be online with timeout feedback
-        print("# Waiting for all accounts to be online...", end="", flush=True)
+        print("# Waiting for accounts to be online...", end="", flush=True)
         try:
             maker.wait_all_online()
             print(" Done!")
@@ -477,7 +466,7 @@ class Pinger:
         self.relay2 = self.receivers_addrs[0].split("@")[1]
 
         print(
-            f"CMPING {self.relay1}({self.addr1}) -> {self.relay2}(group with {len(receivers)} members: {self.receivers_addrs_str}) count={args.count} interval={args.interval}s"
+            f"CMPING {self.relay1}({self.addr1}) -> {self.relay2}(group with {len(receivers)} receivers) count={args.count} interval={args.interval}s"
         )
         ALPHANUMERIC = string.ascii_lowercase + string.digits
         self.tx = "".join(random.choices(ALPHANUMERIC, k=30))
