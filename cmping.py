@@ -117,19 +117,36 @@ def main():
 
 
 class AccountMaker:
-    def __init__(self, dc):
+    def __init__(self, dc, verbose=0):
         self.dc = dc
         self.online = []
+        self.verbose = verbose
 
     def wait_all_online(self):
         remaining = list(self.online)
         while remaining:
             ac = remaining.pop()
-            ac.wait_for_event(EventType.IMAP_INBOX_IDLE)
+            while True:
+                event = ac.wait_for_event()
+                if event.kind == EventType.IMAP_INBOX_IDLE:
+                    break
+                elif event.kind == EventType.ERROR and self.verbose >= 1:
+                    print(f"✗ ERROR during account setup: {event.msg}")
 
     def _add_online(self, account):
         account.start_io()
         self.online.append(account)
+        # Listen for error events during initial connection if verbose
+        if self.verbose >= 1:
+            # Process any immediate error events
+            while True:
+                try:
+                    event = account.wait_for_event(timeout=0.1)
+                    if event.kind == EventType.ERROR:
+                        print(f"✗ ERROR during account setup: {event.msg}")
+                except Exception:
+                    # No more events or timeout
+                    break
 
     def get_relay_account(self, domain):
         # Try to find an existing account for this domain/IP
@@ -164,7 +181,7 @@ def perform_ping(args):
     print(f"# using accounts_dir at: {accounts_dir}")
     with Rpc(accounts_dir=accounts_dir) as rpc:
         dc = DeltaChat(rpc)
-        maker = AccountMaker(dc)
+        maker = AccountMaker(dc, verbose=args.verbose)
 
         # Calculate total accounts needed
         total_accounts = 1 + args.numrecipients
@@ -261,6 +278,8 @@ def perform_ping(args):
                             f"# receiver {idx} ({receiver.get_config('addr')}) joined group"
                         )
                         break
+                elif event.kind == EventType.ERROR and args.verbose >= 1:
+                    print(f"✗ ERROR during group joining for receiver {idx}: {event.msg}")
                 # Continue waiting for the right message
             else:
                 # Timeout occurred
@@ -429,12 +448,12 @@ class Pinger:
                             received_by_receiver[seq].add(receiver_idx)
                             yield seq, ms_duration, len(text), receiver_idx
                             start_clock = time.time()
-                elif event.kind == EventType.ERROR:
-                    print(f"ERROR: {event.msg}")
-                elif event.kind == EventType.MSG_FAILED:
+                elif event.kind == EventType.ERROR and self.args.verbose >= 1:
+                    print(f"✗ ERROR: {event.msg}")
+                elif event.kind == EventType.MSG_FAILED and self.args.verbose >= 1:
                     msg = receiver.get_message_by_id(event.msg_id)
                     text = msg.get_snapshot().text
-                    print(f"Message failed: {text}")
+                    print(f"✗ Message failed: {text}")
                 elif (
                     event.kind in (EventType.INFO, EventType.WARNING)
                     and self.args.verbose >= 1
