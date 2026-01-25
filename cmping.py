@@ -165,25 +165,40 @@ class AccountMaker:
         return account
 
 
-def perform_ping(args):
-    accounts_dir = xdg_cache_home().joinpath("cmping")
-    print(f"# using accounts_dir at: {accounts_dir}")
-    with Rpc(accounts_dir=accounts_dir) as rpc:
-        dc = DeltaChat(rpc)
-        maker = AccountMaker(dc, verbose=args.verbose)
+def setup_accounts(args, maker):
+    """Set up sender and receiver accounts with progress display.
+    
+    Returns:
+        tuple: (sender_account, list_of_receiver_accounts)
+    """
+    # Calculate total accounts needed
+    total_accounts = 1 + args.numrecipients
+    accounts_created = 0
 
-        # Calculate total accounts needed
-        total_accounts = 1 + args.numrecipients
-        accounts_created = 0
-
-        # Create sender account with progress
+    # Create sender account with progress
+    print(
+        f"# Setting up accounts: {accounts_created}/{total_accounts}",
+        end="",
+        flush=True,
+    )
+    try:
+        sender = maker.get_relay_account(args.relay1)
+        accounts_created += 1
         print(
-            f"# Setting up accounts: {accounts_created}/{total_accounts}",
+            f"\r# Setting up accounts: {accounts_created}/{total_accounts}",
             end="",
             flush=True,
         )
+    except Exception as e:
+        print(f"\r✗ Failed to setup sender account on {args.relay1}: {e}")
+        sys.exit(1)
+
+    # Create receiver accounts with progress
+    receivers = []
+    for i in range(args.numrecipients):
         try:
-            sender = maker.get_relay_account(args.relay1)
+            receiver = maker.get_relay_account(args.relay2)
+            receivers.append(receiver)
             accounts_created += 1
             print(
                 f"\r# Setting up accounts: {accounts_created}/{total_accounts}",
@@ -191,31 +206,140 @@ def perform_ping(args):
                 flush=True,
             )
         except Exception as e:
-            print(f"\r✗ Failed to setup sender account on {args.relay1}: {e}")
+            print(
+                f"\r✗ Failed to setup receiver account {i+1} on {args.relay2}: {e}"
+            )
             sys.exit(1)
 
-        # Create receiver accounts with progress
-        receivers = []
-        for i in range(args.numrecipients):
-            try:
-                receiver = maker.get_relay_account(args.relay2)
-                receivers.append(receiver)
-                accounts_created += 1
-                print(
-                    f"\r# Setting up accounts: {accounts_created}/{total_accounts}",
-                    end="",
-                    flush=True,
-                )
-            except Exception as e:
-                print(
-                    f"\r✗ Failed to setup receiver account {i+1} on {args.relay2}: {e}"
-                )
-                sys.exit(1)
+    # Account setup complete
+    print(
+        f"\r# Setting up accounts: {accounts_created}/{total_accounts} - Complete!"
+    )
+    
+    return sender, receivers
 
-        # Account setup complete
-        print(
-            f"\r# Setting up accounts: {accounts_created}/{total_accounts} - Complete!"
+
+def create_and_promote_group(sender, receivers):
+    """Create a group chat and send initial message to promote it.
+    
+    Returns:
+        group: The created group chat object
+    """
+    # Create a group chat from sender and add all receivers
+    group = sender.create_group("cmping")
+    for receiver in receivers:
+        # Create a contact for the receiver account and add to group
+        contact = sender.create_contact(receiver)
+        group.add_contact(contact)
+
+    # Send an initial message to promote the group
+    # This sends invitations to all members
+    print("# promoting group chat by sending initial message")
+    group.send_text("cmping group chat initialized")
+    
+    return group
+
+
+def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
+    """Wait concurrently for all receivers to join the group with progress display.
+    
+    Args:
+        args: Command line arguments (for verbose flag)
+        sender: Sender account
+        receivers: List of receiver accounts
+        timeout_seconds: Maximum time to wait for all receivers
+        
+    Returns:
+        int: Number of receivers that successfully joined
+    """
+    print("# waiting for receivers to join group", end="", flush=True)
+    sender_addr = sender.get_config("addr")
+    start_time = time.time()
+    
+    # Track which receivers have joined
+    joined_receivers = set()
+    receiver_threads_queue = queue.Queue()
+    
+    def wait_for_receiver_join(idx, receiver, deadline):
+        """Thread function to wait for a single receiver to join"""
+        try:
+            while time.time() < deadline:
+                event = receiver.wait_for_event()
+                if event.kind == EventType.INCOMING_MSG:
+                    msg = receiver.get_message_by_id(event.msg_id)
+                    snapshot = msg.get_snapshot()
+                    sender_contact = msg.get_sender_contact()
+                    sender_contact_snapshot = sender_contact.get_snapshot()
+                    if (
+                        sender_contact_snapshot.address == sender_addr
+                        and "cmping group chat initialized" in snapshot.text
+                    ):
+                        chat_id = snapshot.chat_id
+                        receiver_group = receiver.get_chat_by_id(chat_id)
+                        receiver_group.accept()
+                        receiver_threads_queue.put(("joined", idx, receiver.get_config("addr")))
+                        return
+                elif event.kind == EventType.ERROR and args.verbose >= 1:
+                    receiver_threads_queue.put(("error", idx, event.msg))
+            # Timeout occurred
+            receiver_threads_queue.put(("timeout", idx, None))
+        except Exception as e:
+            receiver_threads_queue.put(("exception", idx, str(e)))
+    
+    # Start a thread for each receiver
+    deadline = start_time + timeout_seconds
+    threads = []
+    for idx, receiver in enumerate(receivers):
+        t = threading.Thread(
+            target=wait_for_receiver_join, args=(idx, receiver, deadline), daemon=False
         )
+        t.start()
+        threads.append(t)
+    
+    # Monitor progress and show spinner
+    total_receivers = len(receivers)
+    while len(joined_receivers) < total_receivers and time.time() < deadline:
+        try:
+            event_type, idx, data = receiver_threads_queue.get(timeout=0.5)
+            if event_type == "joined":
+                joined_receivers.add(idx)
+                print(f"\r# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
+            elif event_type == "error":
+                print(f"\n✗ ERROR during group joining for receiver {idx}: {data}")
+                print(f"# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
+            elif event_type == "timeout":
+                print(f"\n# WARNING: receiver {idx} did not join group within {timeout_seconds}s")
+                print(f"# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
+            elif event_type == "exception":
+                print(f"\n# ERROR: receiver {idx} encountered exception: {data}")
+                print(f"# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
+        except queue.Empty:
+            # Update spinner even when no events
+            print(f"\r# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
+    
+    # Wait for threads to complete with a short timeout
+    for t in threads:
+        t.join(timeout=1.0)
+    
+    # Final status
+    print(f"\r# waiting for receivers to join group {len(joined_receivers)}/{total_receivers} - Complete!")
+    
+    # Check if all receivers joined
+    if len(joined_receivers) < total_receivers:
+        print(f"# WARNING: Only {len(joined_receivers)}/{total_receivers} receivers joined the group")
+    
+    return len(joined_receivers)
+
+
+def perform_ping(args):
+    accounts_dir = xdg_cache_home().joinpath("cmping")
+    print(f"# using accounts_dir at: {accounts_dir}")
+    with Rpc(accounts_dir=accounts_dir) as rpc:
+        dc = DeltaChat(rpc)
+        maker = AccountMaker(dc, verbose=args.verbose)
+
+        # Set up sender and receiver accounts
+        sender, receivers = setup_accounts(args, maker)
 
         # Wait for all accounts to be online with timeout feedback
         print("# Waiting for all accounts to be online...", end="", flush=True)
@@ -226,95 +350,11 @@ def perform_ping(args):
             print(f"\n✗ Timeout or error waiting for accounts to be online: {e}")
             sys.exit(1)
 
-        # Create a group chat from sender and add all receivers
-        group = sender.create_group("cmping")
-        for receiver in receivers:
-            # Create a contact for the receiver account and add to group
-            contact = sender.create_contact(receiver)
-            group.add_contact(contact)
+        # Create group and promote it
+        group = create_and_promote_group(sender, receivers)
 
-        # Send an initial message to promote the group
-        # This sends invitations to all members
-        print("# promoting group chat by sending initial message")
-        group.send_text("cmping group chat initialized")
-
-        # Wait for all receivers to receive the group invitation and accept it concurrently
-        print("# waiting for receivers to join group", end="", flush=True)
-        sender_addr = sender.get_config("addr")
-        timeout_seconds = 30
-        start_time = time.time()
-        
-        # Track which receivers have joined
-        joined_receivers = set()
-        receiver_threads_queue = queue.Queue()
-        
-        def wait_for_receiver_join(idx, receiver, deadline):
-            """Thread function to wait for a single receiver to join"""
-            try:
-                while time.time() < deadline:
-                    event = receiver.wait_for_event()
-                    if event.kind == EventType.INCOMING_MSG:
-                        msg = receiver.get_message_by_id(event.msg_id)
-                        snapshot = msg.get_snapshot()
-                        sender_contact = msg.get_sender_contact()
-                        sender_contact_snapshot = sender_contact.get_snapshot()
-                        if (
-                            sender_contact_snapshot.address == sender_addr
-                            and "cmping group chat initialized" in snapshot.text
-                        ):
-                            chat_id = snapshot.chat_id
-                            receiver_group = receiver.get_chat_by_id(chat_id)
-                            receiver_group.accept()
-                            receiver_threads_queue.put(("joined", idx, receiver.get_config("addr")))
-                            return
-                    elif event.kind == EventType.ERROR and args.verbose >= 1:
-                        receiver_threads_queue.put(("error", idx, event.msg))
-                # Timeout occurred
-                receiver_threads_queue.put(("timeout", idx, None))
-            except Exception as e:
-                receiver_threads_queue.put(("exception", idx, str(e)))
-        
-        # Start a thread for each receiver
-        deadline = start_time + timeout_seconds
-        threads = []
-        for idx, receiver in enumerate(receivers):
-            t = threading.Thread(
-                target=wait_for_receiver_join, args=(idx, receiver, deadline), daemon=False
-            )
-            t.start()
-            threads.append(t)
-        
-        # Monitor progress and show spinner
-        total_receivers = len(receivers)
-        while len(joined_receivers) < total_receivers and time.time() < deadline:
-            try:
-                event_type, idx, data = receiver_threads_queue.get(timeout=0.5)
-                if event_type == "joined":
-                    joined_receivers.add(idx)
-                    print(f"\r# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
-                elif event_type == "error":
-                    print(f"\n✗ ERROR during group joining for receiver {idx}: {data}")
-                    print(f"# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
-                elif event_type == "timeout":
-                    print(f"\n# WARNING: receiver {idx} did not join group within {timeout_seconds}s")
-                    print(f"# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
-                elif event_type == "exception":
-                    print(f"\n# ERROR: receiver {idx} encountered exception: {data}")
-                    print(f"# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
-            except queue.Empty:
-                # Update spinner even when no events
-                print(f"\r# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
-        
-        # Wait for threads to complete with a short timeout
-        for t in threads:
-            t.join(timeout=1.0)
-        
-        # Final status
-        print(f"\r# waiting for receivers to join group {len(joined_receivers)}/{total_receivers} - Complete!")
-        
-        # Check if all receivers joined
-        if len(joined_receivers) < total_receivers:
-            print(f"# WARNING: Only {len(joined_receivers)}/{total_receivers} receivers joined the group")
+        # Wait for all receivers to join the group
+        wait_for_receivers_to_join(args, sender, receivers)
 
         pinger = Pinger(args, sender, group, receivers)
         received = {}
