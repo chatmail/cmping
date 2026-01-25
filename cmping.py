@@ -261,7 +261,18 @@ def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
     receiver_threads_queue = queue.Queue()
     
     def wait_for_receiver_join(idx, receiver, deadline):
-        """Thread function to wait for a single receiver to join"""
+        """Thread function to wait for a single receiver to join.
+        
+        Args:
+            idx: Index of the receiver
+            receiver: Receiver account object
+            deadline: Timestamp when timeout should occur
+            
+        Note:
+            Communicates results via receiver_threads_queue, does not return values.
+            Queue messages: ("joined", idx, addr), ("error", idx, msg), 
+                          ("timeout", idx, None), ("exception", idx, error_str)
+        """
         try:
             while time.time() < deadline:
                 event = receiver.wait_for_event()
@@ -291,7 +302,7 @@ def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
     threads = []
     for idx, receiver in enumerate(receivers):
         t = threading.Thread(
-            target=wait_for_receiver_join, args=(idx, receiver, deadline), daemon=False
+            target=wait_for_receiver_join, args=(idx, receiver, deadline)
         )
         t.start()
         threads.append(t)
