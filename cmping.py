@@ -238,43 +238,78 @@ def perform_ping(args):
         print("# promoting group chat by sending initial message")
         group.send_text("cmping group chat initialized")
 
-        # Wait for each receiver to receive the group invitation and accept it
-        print("# waiting for receivers to join group")
+        # Wait for all receivers to receive the group invitation and accept it concurrently
+        print("# waiting for receivers to join group", end="", flush=True)
         sender_addr = sender.get_config("addr")
-        for idx, receiver in enumerate(receivers):
-            # Wait for incoming message (the group invitation/first message)
-            # Set a reasonable timeout
-            timeout_seconds = 30
-            start_time = time.time()
-            while time.time() - start_time < timeout_seconds:
-                event = receiver.wait_for_event()
-                if event.kind == EventType.INCOMING_MSG:
-                    msg = receiver.get_message_by_id(event.msg_id)
-                    snapshot = msg.get_snapshot()
-                    # Get sender contact and check if it's from our sender
-                    sender_contact = msg.get_sender_contact()
-                    sender_contact_snapshot = sender_contact.get_snapshot()
-                    # Verify this is from the sender and is the group initialization message
-                    if (
-                        sender_contact_snapshot.address == sender_addr
-                        and "cmping group chat initialized" in snapshot.text
-                    ):
-                        chat_id = snapshot.chat_id
-                        receiver_group = receiver.get_chat_by_id(chat_id)
-                        # Accept the group chat
-                        receiver_group.accept()
-                        print(
-                            f"# receiver {idx} ({receiver.get_config('addr')}) joined group"
-                        )
-                        break
-                elif event.kind == EventType.ERROR and args.verbose >= 1:
-                    print(f"✗ ERROR during group joining for receiver {idx}: {event.msg}")
-                # Continue waiting for the right message
-            else:
+        timeout_seconds = 30
+        start_time = time.time()
+        
+        # Track which receivers have joined
+        joined_receivers = set()
+        receiver_threads_queue = queue.Queue()
+        
+        def wait_for_receiver_join(idx, receiver):
+            """Thread function to wait for a single receiver to join"""
+            try:
+                while time.time() - start_time < timeout_seconds:
+                    event = receiver.wait_for_event()
+                    if event.kind == EventType.INCOMING_MSG:
+                        msg = receiver.get_message_by_id(event.msg_id)
+                        snapshot = msg.get_snapshot()
+                        sender_contact = msg.get_sender_contact()
+                        sender_contact_snapshot = sender_contact.get_snapshot()
+                        if (
+                            sender_contact_snapshot.address == sender_addr
+                            and "cmping group chat initialized" in snapshot.text
+                        ):
+                            chat_id = snapshot.chat_id
+                            receiver_group = receiver.get_chat_by_id(chat_id)
+                            receiver_group.accept()
+                            receiver_threads_queue.put(("joined", idx, receiver.get_config("addr")))
+                            return
+                    elif event.kind == EventType.ERROR and args.verbose >= 1:
+                        receiver_threads_queue.put(("error", idx, event.msg))
                 # Timeout occurred
-                print(
-                    f"# WARNING: receiver {idx} did not join group within {timeout_seconds}s"
-                )
+                receiver_threads_queue.put(("timeout", idx, None))
+            except Exception as e:
+                receiver_threads_queue.put(("exception", idx, str(e)))
+        
+        # Start a thread for each receiver
+        threads = []
+        for idx, receiver in enumerate(receivers):
+            t = threading.Thread(
+                target=wait_for_receiver_join, args=(idx, receiver), daemon=True
+            )
+            t.start()
+            threads.append(t)
+        
+        # Monitor progress and show spinner
+        total_receivers = len(receivers)
+        while len(joined_receivers) < total_receivers and time.time() - start_time < timeout_seconds:
+            try:
+                event_type, idx, data = receiver_threads_queue.get(timeout=0.1)
+                if event_type == "joined":
+                    joined_receivers.add(idx)
+                    print(f"\r# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
+                elif event_type == "error":
+                    print(f"\n✗ ERROR during group joining for receiver {idx}: {data}")
+                    print(f"# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
+                elif event_type == "timeout":
+                    print(f"\n# WARNING: receiver {idx} did not join group within {timeout_seconds}s")
+                    print(f"# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
+                elif event_type == "exception":
+                    print(f"\n# ERROR: receiver {idx} encountered exception: {data}")
+                    print(f"# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
+            except queue.Empty:
+                # Update spinner even when no events
+                print(f"\r# waiting for receivers to join group {len(joined_receivers)}/{total_receivers}", end="", flush=True)
+        
+        # Final status
+        print(f"\r# waiting for receivers to join group {len(joined_receivers)}/{total_receivers} - Complete!")
+        
+        # Check if all receivers joined
+        if len(joined_receivers) < total_receivers:
+            print(f"# WARNING: Only {len(joined_receivers)}/{total_receivers} receivers joined the group")
 
         pinger = Pinger(args, sender, group, receivers)
         received = {}
