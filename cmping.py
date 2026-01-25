@@ -131,7 +131,7 @@ class AccountMaker:
                 if event.kind == EventType.IMAP_INBOX_IDLE:
                     break
                 elif event.kind == EventType.ERROR and self.verbose >= 1:
-                    print(f"✗ ERROR during account setup: {event.msg}")
+                    print(f"✗ ERROR during profile setup: {event.msg}")
 
     def _add_online(self, account):
         account.start_io()
@@ -153,13 +153,13 @@ class AccountMaker:
             try:
                 account.set_config_from_qr(qr_url)
             except Exception as e:
-                print(f"✗ Failed to configure account on {domain}: {e}")
+                print(f"✗ Failed to configure profile on {domain}: {e}")
                 raise
 
         try:
             self._add_online(account)
         except Exception as e:
-            print(f"✗ Failed to bring account online for {domain}: {e}")
+            print(f"✗ Failed to bring profile online for {domain}: {e}")
             raise
 
         return account
@@ -171,15 +171,27 @@ def setup_accounts(args, maker):
     Returns:
         tuple: (sender_account, list_of_receiver_accounts)
     """
-    # Calculate total accounts needed
-    total_accounts = 1 + args.numrecipients
+    # Calculate total profiles needed
+    total_profiles = 1 + args.numrecipients
+    profiles_created = 0
 
     # Create sender and receiver accounts with spinner
-    print("# Setting up accounts...", end="", flush=True)
+    spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    print(
+        f"# Setting up profiles {spinner_chars[0]} {profiles_created}/{total_profiles}",
+        end="",
+        flush=True,
+    )
     try:
         sender = maker.get_relay_account(args.relay1)
+        profiles_created += 1
+        print(
+            f"\r# Setting up profiles {spinner_chars[profiles_created % len(spinner_chars)]} {profiles_created}/{total_profiles}",
+            end="",
+            flush=True,
+        )
     except Exception as e:
-        print(f"\r✗ Failed to setup sender account on {args.relay1}: {e}")
+        print(f"\r✗ Failed to setup sender profile on {args.relay1}: {e}")
         sys.exit(1)
 
     # Create receiver accounts
@@ -188,12 +200,18 @@ def setup_accounts(args, maker):
         try:
             receiver = maker.get_relay_account(args.relay2)
             receivers.append(receiver)
+            profiles_created += 1
+            print(
+                f"\r# Setting up profiles {spinner_chars[profiles_created % len(spinner_chars)]} {profiles_created}/{total_profiles}",
+                end="",
+                flush=True,
+            )
         except Exception as e:
-            print(f"\r✗ Failed to setup receiver account {i+1} on {args.relay2}: {e}")
+            print(f"\r✗ Failed to setup receiver profile {i+1} on {args.relay2}: {e}")
             sys.exit(1)
 
-    # Account setup complete
-    print("\r# Setting up accounts... Done!")
+    # Profile setup complete
+    print(f"\r# Setting up profiles... Done!                    ")
 
     return sender, receivers
 
@@ -366,13 +384,45 @@ def perform_ping(args):
         sender, receivers = setup_accounts(args, maker)
 
         # Wait for all accounts to be online with timeout feedback
-        print("# Waiting for accounts to be online...", end="", flush=True)
-        try:
-            maker.wait_all_online()
-            print(" Done!")
-        except Exception as e:
-            print(f"\n✗ Timeout or error waiting for accounts to be online: {e}")
+        spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+        # Flag to indicate when wait_all_online is complete
+        online_complete = threading.Event()
+        online_error = None
+
+        def wait_online_thread():
+            nonlocal online_error
+            try:
+                maker.wait_all_online()
+            except Exception as e:
+                online_error = e
+            finally:
+                online_complete.set()
+
+        # Start the wait in a separate thread
+        wait_thread = threading.Thread(target=wait_online_thread)
+        wait_thread.start()
+
+        # Show spinner while waiting
+        spinner_idx = 0
+        while not online_complete.is_set():
+            print(
+                f"\r# Waiting for profiles to be online {spinner_chars[spinner_idx % len(spinner_chars)]}",
+                end="",
+                flush=True,
+            )
+            spinner_idx += 1
+            online_complete.wait(timeout=0.1)
+
+        wait_thread.join()
+
+        if online_error:
+            print(
+                f"\n✗ Timeout or error waiting for profiles to be online: {online_error}"
+            )
             sys.exit(1)
+
+        print("\r# Waiting for profiles to be online... Done!   ")
 
         # Create group and promote it
         group = create_and_promote_group(sender, receivers)
