@@ -34,6 +34,7 @@ import sys
 import threading
 import time
 import urllib.parse
+from dataclasses import dataclass
 from statistics import stdev
 
 from deltachat_rpc_client import DeltaChat, EventType, Rpc
@@ -41,6 +42,15 @@ from xdg_base_dirs import xdg_cache_home
 
 # Spinner characters for progress display
 SPINNER_CHARS = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+
+@dataclass
+class RelayContext:
+    """Context for a relay including its RPC connection, DeltaChat instance, and account maker."""
+
+    rpc: Rpc
+    dc: DeltaChat
+    maker: "AccountMaker"
 
 
 def log_event_verbose(event, addr, verbose_level=3):
@@ -174,6 +184,11 @@ def main():
         default=1,
         help="number of group recipients (default 1)",
     )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="remove all account directories of tested relays to force fresh account creation",
+    )
     args = parser.parse_args()
     if not args.relay2:
         args.relay2 = args.relay1
@@ -259,11 +274,16 @@ class AccountMaker:
         return account
 
 
-def setup_accounts(args, maker):
+def setup_accounts(args, sender_maker, receiver_maker):
     """Set up sender and receiver accounts with progress display.
 
     Timing: This function's duration is tracked as 'account_setup_time'.
     Uses concurrent execution with up to 10 workers for profile creation.
+
+    Args:
+        args: Command line arguments
+        sender_maker: AccountMaker for the sender's relay
+        receiver_maker: AccountMaker for the receiver's relay
 
     Returns:
         tuple: (sender_account, list_of_receiver_accounts)
@@ -277,7 +297,7 @@ def setup_accounts(args, maker):
     # Create sender and receiver accounts with spinner
     print_progress("Setting up profiles", profiles_created[0], total_profiles, spinner_idx[0])
 
-    def create_account(domain, index):
+    def create_account(maker, domain, index):
         """Create a single account on the specified domain."""
         account = maker.get_relay_account(domain)
         with lock:
@@ -292,18 +312,18 @@ def setup_accounts(args, maker):
         return (index, account)
 
     # Create all accounts concurrently using up to 10 workers
-    # Index 0 is sender, indices 1..N are receivers
-    tasks = [(args.relay1, 0)]  # Sender
+    # Index 0 is sender (uses sender_maker), indices 1..N are receivers (use receiver_maker)
+    tasks = [(sender_maker, args.relay1, 0)]  # Sender
     for i in range(args.numrecipients):
-        tasks.append((args.relay2, i + 1))  # Receivers
+        tasks.append((receiver_maker, args.relay2, i + 1))  # Receivers
 
     results = {}
     errors = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         future_to_task = {
-            executor.submit(create_account, domain, idx): (domain, idx)
-            for domain, idx in tasks
+            executor.submit(create_account, maker, domain, idx): (domain, idx)
+            for maker, domain, idx in tasks
         }
         for future in concurrent.futures.as_completed(future_to_task):
             domain, idx = future_to_task[future]
@@ -550,6 +570,47 @@ def wait_profiles_online(maker):
     print_progress("Waiting for profiles to be online", done=True)
 
 
+def wait_profiles_online_multi(makers):
+    """Wait for all profiles to be online with spinner progress.
+
+    Args:
+        makers: List of AccountMaker instances with accounts to wait for
+
+    Raises:
+        SystemExit: If waiting for profiles fails
+    """
+    online_errors = []
+
+    def wait_online_thread(maker):
+        try:
+            maker.wait_all_online()
+        except Exception as e:
+            online_errors.append(e)
+
+    # Start a thread for each maker
+    threads = []
+    for maker in makers:
+        wait_thread = threading.Thread(target=wait_online_thread, args=(maker,))
+        wait_thread.start()
+        threads.append(wait_thread)
+
+    # Show spinner while waiting
+    spinner_idx = 0
+    while any(t.is_alive() for t in threads):
+        print_progress("Waiting for profiles to be online", spinner_idx=spinner_idx)
+        spinner_idx += 1
+        time.sleep(0.1)
+
+    for t in threads:
+        t.join()
+
+    if online_errors:
+        print(f"\n✗ Timeout or error waiting for profiles to be online: {online_errors[0]}")
+        sys.exit(1)
+
+    print_progress("Waiting for profiles to be online", done=True)
+
+
 def perform_ping(args):
     """Main ping execution function with timing measurements.
 
@@ -561,23 +622,59 @@ def perform_ping(args):
     Returns:
         Pinger: The pinger object with results
     """
-    accounts_dir = xdg_cache_home().joinpath("cmping")
-    print(f"# using accounts_dir at: {accounts_dir}")
-    if accounts_dir.exists() and not accounts_dir.joinpath("accounts.toml").exists():
-        shutil.rmtree(accounts_dir)
-
-    with Rpc(accounts_dir=accounts_dir) as rpc:
+    base_accounts_dir = xdg_cache_home().joinpath("cmping")
+    
+    # Determine unique relays being tested. Using a set to deduplicate when
+    # relay1 == relay2 (same relay testing), so we only create one RPC context.
+    relays = {args.relay1, args.relay2}
+    
+    # Handle --reset option: remove account directories for tested relays
+    if args.reset:
+        for relay in relays:
+            relay_dir = base_accounts_dir.joinpath(relay)
+            if relay_dir.exists():
+                print(f"# Removing account directory for {relay}: {relay_dir}")
+                shutil.rmtree(relay_dir)
+    
+    # Create per-relay account directories and RPC instances.
+    # We manually manage __enter__/__exit__ to handle multiple context managers in a loop.
+    relay_contexts = {}  # {relay: RelayContext}
+    
+    for relay in relays:
+        relay_dir = base_accounts_dir.joinpath(relay)
+        print(f"# using accounts_dir for {relay} at: {relay_dir}")
+        if relay_dir.exists() and not relay_dir.joinpath("accounts.toml").exists():
+            shutil.rmtree(relay_dir)
+        
+        rpc = Rpc(accounts_dir=relay_dir)
+        try:
+            rpc.__enter__()
+        except Exception as e:
+            print(f"✗ Failed to initialize RPC for {relay}: {e}")
+            # Clean up any already-initialized contexts
+            for ctx in relay_contexts.values():
+                try:
+                    ctx.rpc.__exit__(None, None, None)
+                except Exception:
+                    pass
+            raise
         dc = DeltaChat(rpc)
         maker = AccountMaker(dc, verbose=args.verbose)
-
+        relay_contexts[relay] = RelayContext(rpc=rpc, dc=dc, maker=maker)
+    
+    try:
         # Phase 1: Account Setup (timed)
         account_setup_start = time.time()
 
-        # Set up sender and receiver accounts
-        sender, receivers = setup_accounts(args, maker)
+        # Set up sender and receiver accounts using per-relay makers
+        sender_maker = relay_contexts[args.relay1].maker
+        receiver_maker = relay_contexts[args.relay2].maker
+        sender, receivers = setup_accounts(args, sender_maker, receiver_maker)
 
         # Wait for all accounts to be online with timeout feedback
-        wait_profiles_online(maker)
+        # Combine all makers for waiting
+        all_makers = [relay_contexts[r].maker for r in relays]
+        wait_profiles_online_multi(all_makers)
 
         account_setup_time = time.time() - account_setup_start
 
@@ -690,6 +787,13 @@ def perform_ping(args):
             print(f"recv rate: {recv_rate:.2f} msg/s")
 
         return pinger
+    finally:
+        # Clean up all RPC contexts
+        for relay, ctx in relay_contexts.items():
+            try:
+                ctx.rpc.__exit__(None, None, None)
+            except Exception as e:
+                print(f"# Warning: cleanup failed for {relay}: {e}")
 
 
 class Pinger:
