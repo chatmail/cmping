@@ -623,8 +623,12 @@ def perform_ping(args):
         if current_seq is not None:
             print()  # End last line
 
-        # Print statistics
-        print(f"--- {pinger.addr1} -> {pinger.receivers_addrs_str} statistics ---")
+        # Print statistics - show full addresses only in verbose >= 2
+        if args.verbose >= 2:
+            receivers_info = pinger.receivers_addrs_str
+        else:
+            receivers_info = f"{len(pinger.receivers_addrs)} receivers"
+        print(f"--- {pinger.addr1} -> {receivers_info} statistics ---")
         print(
             f"{pinger.sent} transmitted, {pinger.received} received, {pinger.loss:.2f}% loss"
         )

@@ -1,6 +1,37 @@
 
 # cmping changelog 
 
+## 0.16.0
+
+### Features
+
+- Add timing statistics at the end of each run showing:
+  - Account setup time
+  - Group join time
+  - Message send/receive time
+  - Send and receive message rates (msg/s)
+
+### Improvements
+
+- Streamlined code with extracted helper functions:
+  - `print_progress()` for consistent progress display
+  - `format_duration()` for human-readable time formatting
+  - `wait_profiles_online()` for profile online waiting logic
+  - `SPINNER_CHARS` constant to avoid duplication
+
+- Improved verbosity handling for receiver addresses:
+  - Normal mode: shows only receiver count in statistics
+  - `-v` mode: shows receiver count after joining
+  - `-vv` mode: shows full list of receiver addresses
+
+- Added comprehensive documentation:
+  - Module-level docstring explaining 4-phase message flow
+  - Detailed docstrings for Pinger class and methods
+
+### Bug Fixes
+
+- Fixed `loss` property to return `0.0` instead of `1` when no messages expected
+
 ## 0.15.0
 
 ### Improvements
