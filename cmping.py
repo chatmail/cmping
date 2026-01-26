@@ -1,5 +1,24 @@
 """
 chatmail ping aka "cmping" transmits messages between relays.
+
+Message Flow:
+=============
+1. ACCOUNT SETUP: Create sender and receiver accounts on specified relay domains
+   - Each account connects to its relay's IMAP/SMTP servers
+   - Accounts wait for IMAP_INBOX_IDLE state indicating readiness
+
+2. GROUP CREATION: Sender creates a group chat and adds all receivers
+   - An initialization message is sent to promote the group
+   - All receivers must accept the group invitation before ping begins
+
+3. PING SEND: Sender transmits messages to the group at specified intervals
+   - Messages contain: unique-id timestamp sequence-number
+   - Messages flow: Sender -> relay1 SMTP -> relay2 IMAP -> Receivers
+
+4. PING RECEIVE: Each receiver waits for incoming messages
+   - On receipt, round-trip time is calculated from embedded timestamp
+   - Progress is tracked per-sequence across all receivers
+   - Stats are accumulated for final report
 """
 
 import argparse
@@ -18,6 +37,9 @@ from statistics import stdev
 
 from deltachat_rpc_client import DeltaChat, EventType, Rpc
 from xdg_base_dirs import xdg_cache_home
+
+# Spinner characters for progress display
+SPINNER_CHARS = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 
 def log_event_verbose(event, addr, verbose_level=3):
@@ -75,6 +97,41 @@ def create_qr_url(domain_or_ip):
     else:
         # Use dcaccount for domain names
         return f"dcaccount:{domain_or_ip}"
+
+
+def print_progress(message, current=None, total=None, spinner_idx=0, done=False):
+    """Print progress with optional spinner and counter.
+
+    Args:
+        message: The progress message to display
+        current: Current count (optional)
+        total: Total count (optional)
+        spinner_idx: Index into SPINNER_CHARS for spinner animation
+        done: If True, print 'Done!' and newline
+    """
+    if done:
+        print(f"\r# {message}... Done!".ljust(60))
+    elif current is not None and total is not None:
+        spinner = SPINNER_CHARS[spinner_idx % len(SPINNER_CHARS)]
+        print(f"\r# {message} {spinner} {current}/{total}", end="", flush=True)
+    else:
+        spinner = SPINNER_CHARS[spinner_idx % len(SPINNER_CHARS)]
+        print(f"\r# {message} {spinner}", end="", flush=True)
+
+
+def format_duration(seconds):
+    """Format a duration in seconds to a human-readable string.
+
+    Args:
+        seconds: Duration in seconds
+
+    Returns:
+        str: Formatted duration (e.g., "1.23s" or "45.67ms")
+    """
+    if seconds >= 1:
+        return f"{seconds:.2f}s"
+    else:
+        return f"{seconds * 1000:.2f}ms"
 
 
 def main():
@@ -204,6 +261,8 @@ class AccountMaker:
 def setup_accounts(args, maker):
     """Set up sender and receiver accounts with progress display.
 
+    Timing: This function's duration is tracked as 'account_setup_time'.
+
     Returns:
         tuple: (sender_account, list_of_receiver_accounts)
     """
@@ -212,20 +271,12 @@ def setup_accounts(args, maker):
     profiles_created = 0
 
     # Create sender and receiver accounts with spinner
-    spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-    print(
-        f"# Setting up profiles {spinner_chars[0]} {profiles_created}/{total_profiles}",
-        end="",
-        flush=True,
-    )
+    print_progress("Setting up profiles", profiles_created, total_profiles, 0)
+
     try:
         sender = maker.get_relay_account(args.relay1)
         profiles_created += 1
-        print(
-            f"\r# Setting up profiles {spinner_chars[profiles_created % len(spinner_chars)]} {profiles_created}/{total_profiles}",
-            end="",
-            flush=True,
-        )
+        print_progress("Setting up profiles", profiles_created, total_profiles, profiles_created)
     except Exception as e:
         print(f"\r✗ Failed to setup sender profile on {args.relay1}: {e}")
         sys.exit(1)
@@ -237,17 +288,13 @@ def setup_accounts(args, maker):
             receiver = maker.get_relay_account(args.relay2)
             receivers.append(receiver)
             profiles_created += 1
-            print(
-                f"\r# Setting up profiles {spinner_chars[profiles_created % len(spinner_chars)]} {profiles_created}/{total_profiles}",
-                end="",
-                flush=True,
-            )
+            print_progress("Setting up profiles", profiles_created, total_profiles, profiles_created)
         except Exception as e:
             print(f"\r✗ Failed to setup receiver profile {i+1} on {args.relay2}: {e}")
             sys.exit(1)
 
     # Profile setup complete
-    print("\r# Setting up profiles... Done!")
+    print_progress("Setting up profiles", done=True)
 
     return sender, receivers
 
@@ -281,6 +328,8 @@ def create_and_promote_group(sender, receivers, verbose=0):
 
 def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
     """Wait concurrently for all receivers to join the group with progress display.
+
+    Timing: This function's duration is tracked as 'group_join_time'.
 
     Args:
         args: Command line arguments (for verbose flag)
@@ -408,9 +457,14 @@ def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
         f"\r# Waiting for receivers to come online {len(joined_receivers)}/{total_receivers} - Complete!"
     )
 
-    # In verbose mode, print all receiver addresses
-    if args.verbose >= 1 and joined_addrs:
-        print(f"# Receivers online: {', '.join(joined_addrs)}")
+    # Print receiver info based on verbosity level
+    # -vv or higher: print full list of addresses
+    # -v or normal: just print count
+    if joined_addrs:
+        if args.verbose >= 2:
+            print(f"# Receivers online: {', '.join(joined_addrs)}")
+        elif args.verbose >= 1:
+            print(f"# Receivers online: {len(joined_addrs)}")
 
     # Check if all receivers joined
     if len(joined_receivers) < total_receivers:
@@ -421,7 +475,59 @@ def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
     return len(joined_receivers)
 
 
+def wait_profiles_online(maker):
+    """Wait for all profiles to be online with spinner progress.
+
+    Args:
+        maker: AccountMaker instance with accounts to wait for
+
+    Raises:
+        SystemExit: If waiting for profiles fails
+    """
+    # Flag to indicate when wait_all_online is complete
+    online_complete = threading.Event()
+    online_error = None
+
+    def wait_online_thread():
+        nonlocal online_error
+        try:
+            maker.wait_all_online()
+        except Exception as e:
+            online_error = e
+        finally:
+            online_complete.set()
+
+    # Start the wait in a separate thread
+    wait_thread = threading.Thread(target=wait_online_thread)
+    wait_thread.start()
+
+    # Show spinner while waiting
+    spinner_idx = 0
+    while not online_complete.is_set():
+        print_progress("Waiting for profiles to be online", spinner_idx=spinner_idx)
+        spinner_idx += 1
+        online_complete.wait(timeout=0.1)
+
+    wait_thread.join()
+
+    if online_error:
+        print(f"\n✗ Timeout or error waiting for profiles to be online: {online_error}")
+        sys.exit(1)
+
+    print_progress("Waiting for profiles to be online", done=True)
+
+
 def perform_ping(args):
+    """Main ping execution function with timing measurements.
+
+    Timing Phases:
+    1. account_setup_time: Time to create and configure all accounts
+    2. group_join_time: Time for all receivers to join the group
+    3. message_time: Time to send and receive all ping messages
+
+    Returns:
+        Pinger: The pinger object with results
+    """
     accounts_dir = xdg_cache_home().joinpath("cmping")
     print(f"# using accounts_dir at: {accounts_dir}")
     if accounts_dir.exists() and not accounts_dir.joinpath("accounts.toml").exists():
@@ -431,55 +537,30 @@ def perform_ping(args):
         dc = DeltaChat(rpc)
         maker = AccountMaker(dc, verbose=args.verbose)
 
+        # Phase 1: Account Setup (timed)
+        account_setup_start = time.time()
+
         # Set up sender and receiver accounts
         sender, receivers = setup_accounts(args, maker)
 
         # Wait for all accounts to be online with timeout feedback
-        spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        wait_profiles_online(maker)
 
-        # Flag to indicate when wait_all_online is complete
-        online_complete = threading.Event()
-        online_error = None
+        account_setup_time = time.time() - account_setup_start
 
-        def wait_online_thread():
-            nonlocal online_error
-            try:
-                maker.wait_all_online()
-            except Exception as e:
-                online_error = e
-            finally:
-                online_complete.set()
-
-        # Start the wait in a separate thread
-        wait_thread = threading.Thread(target=wait_online_thread)
-        wait_thread.start()
-
-        # Show spinner while waiting
-        spinner_idx = 0
-        while not online_complete.is_set():
-            print(
-                f"\r# Waiting for profiles to be online {spinner_chars[spinner_idx % len(spinner_chars)]}",
-                end="",
-                flush=True,
-            )
-            spinner_idx += 1
-            online_complete.wait(timeout=0.1)
-
-        wait_thread.join()
-
-        if online_error:
-            print(
-                f"\n✗ Timeout or error waiting for profiles to be online: {online_error}"
-            )
-            sys.exit(1)
-
-        print("\r# Waiting for profiles to be online... Done!   ")
+        # Phase 2: Group Join (timed)
+        group_join_start = time.time()
 
         # Create group and promote it
         group = create_and_promote_group(sender, receivers, verbose=args.verbose)
 
         # Wait for all receivers to join the group
         wait_for_receivers_to_join(args, sender, receivers)
+
+        group_join_time = time.time() - group_join_start
+
+        # Phase 3: Message Ping/Pong (timed)
+        message_start = time.time()
 
         pinger = Pinger(args, sender, group, receivers)
         received = {}
@@ -536,9 +617,18 @@ def perform_ping(args):
 
         except KeyboardInterrupt:
             pass
+
+        message_time = time.time() - message_start
+
         if current_seq is not None:
             print()  # End last line
-        print(f"--- {pinger.addr1} -> {pinger.receivers_addrs_str} statistics ---")
+
+        # Print statistics - show full addresses only in verbose >= 2
+        if args.verbose >= 2:
+            receivers_info = pinger.receivers_addrs_str
+        else:
+            receivers_info = f"{len(pinger.receivers_addrs)} receivers"
+        print(f"--- {pinger.addr1} -> {receivers_info} statistics ---")
         print(
             f"{pinger.sent} transmitted, {pinger.received} received, {pinger.loss:.2f}% loss"
         )
@@ -551,11 +641,49 @@ def perform_ping(args):
             print(
                 f"rtt min/avg/max/mdev = {rmin:.3f}/{ravg:.3f}/{rmax:.3f}/{rmdev:.3f} ms"
             )
+
+        # Print timing and rate statistics
+        print("--- timing statistics ---")
+        print(f"account setup: {format_duration(account_setup_time)}")
+        print(f"group join: {format_duration(group_join_time)}")
+        print(f"message send/recv: {format_duration(message_time)}")
+
+        # Calculate message rates
+        if message_time > 0 and pinger.sent > 0:
+            send_rate = pinger.sent / message_time
+            print(f"send rate: {send_rate:.2f} msg/s")
+        if message_time > 0 and pinger.received > 0:
+            recv_rate = pinger.received / message_time
+            print(f"recv rate: {recv_rate:.2f} msg/s")
+
         return pinger
 
 
 class Pinger:
+    """Handles sending ping messages and receiving responses.
+
+    Message Flow:
+    1. send_pings() runs in a background thread, sending messages at intervals
+    2. Each message contains: unique_id timestamp sequence_number
+    3. Messages are sent to a group chat (single send, multiple receivers)
+    4. receive() yields (seq, duration, size, receiver_idx) for each received message
+    5. Multiple receivers may receive each sequence number
+
+    Attributes:
+        sent: Number of messages sent
+        received: Number of messages received (across all receivers)
+        loss: Percentage of expected messages not received
+    """
+
     def __init__(self, args, sender, group, receivers):
+        """Initialize Pinger and start sending messages.
+
+        Args:
+            args: Command line arguments
+            sender: Sender account object
+            group: Group chat object
+            receivers: List of receiver account objects
+        """
         self.args = args
         self.sender = sender
         self.group = group
@@ -579,10 +707,14 @@ class Pinger:
     @property
     def loss(self):
         expected_total = self.sent * len(self.receivers)
-        return 1 if expected_total == 0 else (1 - self.received / expected_total) * 100
+        return 0.0 if expected_total == 0 else (1 - self.received / expected_total) * 100
 
     def send_pings(self):
-        # Send to the group chat (single message to all recipients)
+        """Send ping messages to the group at regular intervals.
+
+        Each message contains: unique_id timestamp sequence_number
+        Flow: Sender -> SMTP relay1 -> IMAP relay2 -> All receivers
+        """
         for seq in range(self.args.count):
             text = f"{self.tx} {time.time():.4f} {seq:17}"
             self.group.send_text(text)
@@ -593,6 +725,15 @@ class Pinger:
         os.kill(os.getpid(), signal.SIGINT)
 
     def receive(self):
+        """Receive ping messages from all receivers.
+
+        Yields:
+            tuple: (seq, ms_duration, size, receiver_idx) for each received message
+                - seq: Sequence number of the message
+                - ms_duration: Round-trip time in milliseconds
+                - size: Size of the message in bytes
+                - receiver_idx: Index of the receiver that received the message
+        """
         num_pending = self.args.count * len(self.receivers)
         start_clock = time.time()
         # Track which sequence numbers have been received by which receiver
@@ -602,7 +743,7 @@ class Pinger:
         event_queue = queue.Queue()
 
         def receiver_thread(receiver_idx, receiver):
-            """Thread function to listen to events from a single receiver"""
+            """Thread function to listen to events from a single receiver."""
             while True:
                 try:
                     event = receiver.wait_for_event()

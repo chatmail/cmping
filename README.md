@@ -67,10 +67,17 @@ Example output for two-domain ping:
 
 3. edit cmping.py and test, finally commit your changes
 
-4. set a new git-tag 
+4. update CHANGELOG.md with the new version number and changes
 
 5. install build/release tools: `pip install build twine`
 
-6. run the following command: 
+6. run the release script:
 
-        rm -rf dist && python -m build && twine upload -r pypi dist/cmping*
+        python release.py
+
+   The release script will:
+   - Validate the version in CHANGELOG.md is a proper version jump
+   - Create and push a git tag for the version
+   - Build the package and upload to PyPI
+   - Add a dev changelog entry and commit it
+   - Print which tag was uploaded to PyPI
