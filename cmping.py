@@ -212,6 +212,7 @@ class AccountMaker:
         self.dc = dc
         self.online = []
         self.verbose = verbose
+        self._lock = threading.Lock()  # Lock for thread-safe operations
 
     def _log_event(self, event, addr):
         """Helper method to log events at verbose level 3."""
@@ -222,7 +223,8 @@ class AccountMaker:
                 print(f"  {event.kind} [{addr}]")
 
     def wait_all_online(self):
-        remaining = list(self.online)
+        with self._lock:
+            remaining = list(self.online)
         while remaining:
             ac = remaining.pop()
             while True:
@@ -239,46 +241,43 @@ class AccountMaker:
                     addr = ac.get_config("addr")
                     self._log_event(event, addr)
 
-    def _add_online(self, account):
-        if self.verbose >= 3:
-            addr = account.get_config("addr")
-            print(f"  Starting I/O for account: {addr}")
-        account.start_io()
-        self.online.append(account)
-
     def get_relay_account(self, domain):
-        # Try to find an existing account for this domain/IP
-        for account in self.dc.get_all_accounts():
-            addr = account.get_config("configured_addr")
-            if addr is not None:
-                # Extract the domain/IP from the configured address
-                addr_domain = addr.split("@")[1] if "@" in addr else None
-                if addr_domain == domain:
-                    if account not in self.online:
-                        if self.verbose >= 3:
-                            print(f"  Reusing existing account: {addr}")
-                        break
-        else:
-            account = self.dc.add_account()
-            if self.verbose >= 3:
-                print(f"  Creating new account for domain: {domain}")
-            qr_url = create_qr_url(domain)
-            try:
+        # Use lock to protect the entire account lookup/creation process
+        # This prevents race conditions when multiple threads try to create accounts
+        with self._lock:
+            # Try to find an existing account for this domain/IP
+            for account in self.dc.get_all_accounts():
+                addr = account.get_config("configured_addr")
+                if addr is not None:
+                    # Extract the domain/IP from the configured address
+                    addr_domain = addr.split("@")[1] if "@" in addr else None
+                    if addr_domain == domain:
+                        if account not in self.online:
+                            if self.verbose >= 3:
+                                print(f"  Reusing existing account: {addr}")
+                            break
+            else:
+                account = self.dc.add_account()
                 if self.verbose >= 3:
-                    print(f"  Configuring account from QR: {domain}")
-                account.set_config_from_qr(qr_url)
-                if self.verbose >= 3:
-                    addr = account.get_config("addr")
-                    print(f"  Account configured: {addr}")
-            except Exception as e:
-                print(f"✗ Failed to configure profile on {domain}: {e}")
-                raise
+                    print(f"  Creating new account for domain: {domain}")
+                qr_url = create_qr_url(domain)
+                try:
+                    if self.verbose >= 3:
+                        print(f"  Configuring account from QR: {domain}")
+                    account.set_config_from_qr(qr_url)
+                    if self.verbose >= 3:
+                        addr = account.get_config("addr")
+                        print(f"  Account configured: {addr}")
+                except Exception as e:
+                    print(f"✗ Failed to configure profile on {domain}: {e}")
+                    raise
 
-        try:
-            self._add_online(account)
-        except Exception as e:
-            print(f"✗ Failed to bring profile online for {domain}: {e}")
-            raise
+            # Start I/O within the lock to ensure online list consistency
+            if self.verbose >= 3:
+                addr = account.get_config("addr")
+                print(f"  Starting I/O for account: {addr}")
+            account.start_io()
+            self.online.append(account)
 
         return account
 
@@ -589,12 +588,14 @@ def wait_profiles_online_multi(makers):
         SystemExit: If waiting for profiles fails
     """
     online_errors = []
+    errors_lock = threading.Lock()
 
     def wait_online_thread(maker):
         try:
             maker.wait_all_online()
         except Exception as e:
-            online_errors.append(e)
+            with errors_lock:
+                online_errors.append(e)
 
     # Start a thread for each maker
     threads = []
