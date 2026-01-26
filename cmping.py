@@ -33,6 +33,7 @@ import sys
 import threading
 import time
 import urllib.parse
+from dataclasses import dataclass
 from statistics import stdev
 
 from deltachat_rpc_client import DeltaChat, EventType, Rpc
@@ -40,6 +41,15 @@ from xdg_base_dirs import xdg_cache_home
 
 # Spinner characters for progress display
 SPINNER_CHARS = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+
+@dataclass
+class RelayContext:
+    """Context for a relay including its RPC connection, DeltaChat instance, and account maker."""
+
+    rpc: Rpc
+    dc: DeltaChat
+    maker: "AccountMaker"
 
 
 def log_event_verbose(event, addr, verbose_level=3):
@@ -593,7 +603,7 @@ def perform_ping(args):
                 shutil.rmtree(relay_dir)
     
     # Create per-relay account directories and RPC instances
-    relay_contexts = {}  # {relay: (rpc, dc, maker)}
+    relay_contexts = {}  # {relay: RelayContext}
     
     for relay in relays:
         relay_dir = base_accounts_dir.joinpath(relay)
@@ -602,23 +612,33 @@ def perform_ping(args):
             shutil.rmtree(relay_dir)
         
         rpc = Rpc(accounts_dir=relay_dir)
-        rpc.__enter__()
+        try:
+            rpc.__enter__()
+        except Exception as e:
+            print(f"✗ Failed to initialize RPC for {relay}: {e}")
+            # Clean up any already-initialized contexts
+            for ctx in relay_contexts.values():
+                try:
+                    ctx.rpc.__exit__(None, None, None)
+                except Exception:
+                    pass
+            raise
         dc = DeltaChat(rpc)
         maker = AccountMaker(dc, verbose=args.verbose)
-        relay_contexts[relay] = (rpc, dc, maker)
+        relay_contexts[relay] = RelayContext(rpc=rpc, dc=dc, maker=maker)
     
     try:
         # Phase 1: Account Setup (timed)
         account_setup_start = time.time()
 
         # Set up sender and receiver accounts using per-relay makers
-        sender_maker = relay_contexts[args.relay1][2]
-        receiver_maker = relay_contexts[args.relay2][2]
+        sender_maker = relay_contexts[args.relay1].maker
+        receiver_maker = relay_contexts[args.relay2].maker
         sender, receivers = setup_accounts(args, sender_maker, receiver_maker)
 
         # Wait for all accounts to be online with timeout feedback
         # Combine all makers for waiting
-        all_makers = [relay_contexts[r][2] for r in relays]
+        all_makers = [relay_contexts[r].maker for r in relays]
         wait_profiles_online_multi(all_makers)
 
         account_setup_time = time.time() - account_setup_start
@@ -734,11 +754,11 @@ def perform_ping(args):
         return pinger
     finally:
         # Clean up all RPC contexts
-        for relay, (rpc, dc, maker) in relay_contexts.items():
+        for relay, ctx in relay_contexts.items():
             try:
-                rpc.__exit__(None, None, None)
-            except Exception:
-                pass
+                ctx.rpc.__exit__(None, None, None)
+            except Exception as e:
+                print(f"# Warning: cleanup failed for {relay}: {e}")
 
 
 class Pinger:
