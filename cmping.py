@@ -481,7 +481,8 @@ def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
         t.join(timeout=1.0)
 
     # Drain any remaining queue events to catch timeouts/errors that came in after the loop exited
-    while not receiver_threads_queue.empty():
+    # Use a simple loop with try/except - the queue.Empty exception will break us out
+    while True:
         try:
             event_type, idx, data = receiver_threads_queue.get_nowait()
             if event_type == "timeout" and idx not in joined_receivers:
