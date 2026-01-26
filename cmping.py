@@ -22,6 +22,7 @@ Message Flow:
 """
 
 import argparse
+import concurrent.futures
 import ipaddress
 import os
 import queue
@@ -262,36 +263,66 @@ def setup_accounts(args, maker):
     """Set up sender and receiver accounts with progress display.
 
     Timing: This function's duration is tracked as 'account_setup_time'.
+    Uses concurrent execution with up to 10 workers for profile creation.
 
     Returns:
         tuple: (sender_account, list_of_receiver_accounts)
     """
     # Calculate total profiles needed
     total_profiles = 1 + args.numrecipients
-    profiles_created = 0
+    profiles_created = [0]  # Use list for mutable counter in closure
+    lock = threading.Lock()
 
     # Create sender and receiver accounts with spinner
-    print_progress("Setting up profiles", profiles_created, total_profiles, 0)
+    print_progress("Setting up profiles", profiles_created[0], total_profiles, 0)
 
-    try:
-        sender = maker.get_relay_account(args.relay1)
-        profiles_created += 1
-        print_progress("Setting up profiles", profiles_created, total_profiles, profiles_created)
-    except Exception as e:
-        print(f"\r✗ Failed to setup sender profile on {args.relay1}: {e}")
+    def create_account(domain, index):
+        """Create a single account on the specified domain."""
+        account = maker.get_relay_account(domain)
+        with lock:
+            profiles_created[0] += 1
+            print_progress(
+                "Setting up profiles",
+                profiles_created[0],
+                total_profiles,
+                profiles_created[0],
+            )
+        return (index, account)
+
+    # Create all accounts concurrently using up to 10 workers
+    # Index 0 is sender, indices 1..N are receivers
+    tasks = [(args.relay1, 0)]  # Sender
+    for i in range(args.numrecipients):
+        tasks.append((args.relay2, i + 1))  # Receivers
+
+    results = {}
+    errors = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_task = {
+            executor.submit(create_account, domain, idx): (domain, idx)
+            for domain, idx in tasks
+        }
+        for future in concurrent.futures.as_completed(future_to_task):
+            domain, idx = future_to_task[future]
+            try:
+                result_idx, account = future.result()
+                results[result_idx] = account
+            except Exception as e:
+                if idx == 0:
+                    errors.append(f"Failed to setup sender profile on {domain}: {e}")
+                else:
+                    errors.append(f"Failed to setup receiver profile {idx} on {domain}: {e}")
+
+    # Check for errors
+    if errors:
+        for error in errors:
+            print(f"\r✗ {error}")
         sys.exit(1)
 
-    # Create receiver accounts
-    receivers = []
-    for i in range(args.numrecipients):
-        try:
-            receiver = maker.get_relay_account(args.relay2)
-            receivers.append(receiver)
-            profiles_created += 1
-            print_progress("Setting up profiles", profiles_created, total_profiles, profiles_created)
-        except Exception as e:
-            print(f"\r✗ Failed to setup receiver profile {i+1} on {args.relay2}: {e}")
-            sys.exit(1)
+    # Extract sender and receivers from results
+    sender = results[0]
+    receivers = [results[i] for i in range(1, args.numrecipients + 1)]
 
     # Profile setup complete
     print_progress("Setting up profiles", done=True)
