@@ -22,6 +22,7 @@ Message Flow:
 """
 
 import argparse
+import concurrent.futures
 import ipaddress
 import os
 import queue
@@ -188,6 +189,13 @@ def main():
         action="store_true",
         help="remove all account directories of tested relays to force fresh account creation",
     )
+    parser.add_argument(
+        "--setup-workers",
+        dest="setup_workers",
+        type=int,
+        default=5,
+        help="number of concurrent workers for account setup (default 5)",
+    )
     args = parser.parse_args()
     if not args.relay2:
         args.relay2 = args.relay1
@@ -202,6 +210,8 @@ class AccountMaker:
         self.dc = dc
         self.online = []
         self.verbose = verbose
+        self._lock = threading.Lock()  # Lock for thread-safe operations
+        self._claimed = set()  # Track accounts claimed but not yet online
 
     def _log_event(self, event, addr):
         """Helper method to log events at verbose level 3."""
@@ -212,7 +222,8 @@ class AccountMaker:
                 print(f"  {event.kind} [{addr}]")
 
     def wait_all_online(self):
-        remaining = list(self.online)
+        with self._lock:
+            remaining = list(self.online)
         while remaining:
             ac = remaining.pop()
             while True:
@@ -234,52 +245,92 @@ class AccountMaker:
             addr = account.get_config("addr")
             print(f"  Starting I/O for account: {addr}")
         account.start_io()
-        self.online.append(account)
+        with self._lock:
+            self.online.append(account)
 
-    def get_relay_account(self, domain):
+    def create_account(self, domain):
+        """Create and configure an account for the given domain without starting IO.
+
+        This method is thread-safe and can be called concurrently.
+
+        Args:
+            domain: Domain or IP address for the account
+
+        Returns:
+            account: The configured account object (not yet online)
+        """
         # Try to find an existing account for this domain/IP
-        for account in self.dc.get_all_accounts():
-            addr = account.get_config("configured_addr")
-            if addr is not None:
-                # Extract the domain/IP from the configured address
-                addr_domain = addr.split("@")[1] if "@" in addr else None
-                if addr_domain == domain:
-                    if account not in self.online:
-                        if self.verbose >= 3:
-                            print(f"  Reusing existing account: {addr}")
-                        break
-        else:
-            account = self.dc.add_account()
+        # Note: get_all_accounts returns all accounts, we need to check
+        # if there's one available for this domain that isn't already in use
+        with self._lock:
+            for account in self.dc.get_all_accounts():
+                addr = account.get_config("configured_addr")
+                if addr is not None:
+                    # Extract the domain/IP from the configured address
+                    addr_domain = addr.split("@")[1] if "@" in addr else None
+                    if addr_domain == domain:
+                        if account not in self.online and account not in self._claimed:
+                            if self.verbose >= 3:
+                                print(f"  Reusing existing account: {addr}")
+                            self._claimed.add(account)
+                            return account
+        
+        # Create a new account
+        account = self.dc.add_account()
+        with self._lock:
+            self._claimed.add(account)
+        if self.verbose >= 3:
+            print(f"  Creating new account for domain: {domain}")
+        qr_url = create_qr_url(domain)
+        try:
             if self.verbose >= 3:
-                print(f"  Creating new account for domain: {domain}")
-            qr_url = create_qr_url(domain)
-            try:
-                if self.verbose >= 3:
-                    print(f"  Configuring account from QR: {domain}")
-                account.set_config_from_qr(qr_url)
-                if self.verbose >= 3:
-                    addr = account.get_config("addr")
-                    print(f"  Account configured: {addr}")
-            except Exception as e:
-                print(f"✗ Failed to configure profile on {domain}: {e}")
-                raise
+                print(f"  Configuring account from QR: {domain}")
+            account.set_config_from_qr(qr_url)
+            if self.verbose >= 3:
+                addr = account.get_config("addr")
+                print(f"  Account configured: {addr}")
+        except Exception as e:
+            print(f"✗ Failed to configure profile on {domain}: {e}")
+            raise
 
+        return account
+
+    def bring_online(self, account, domain):
+        """Bring an already-configured account online.
+
+        Args:
+            account: The configured account object
+            domain: Domain for error messages
+
+        Returns:
+            account: The same account object (now online)
+        """
         try:
             self._add_online(account)
         except Exception as e:
             print(f"✗ Failed to bring profile online for {domain}: {e}")
             raise
-
         return account
+
+    def get_relay_account(self, domain):
+        """Create/configure and bring online an account for the given domain.
+
+        This is a convenience method that combines create_account and bring_online.
+        """
+        account = self.create_account(domain)
+        return self.bring_online(account, domain)
 
 
 def setup_accounts(args, sender_maker, receiver_maker):
-    """Set up sender and receiver accounts with progress display.
+    """Set up sender and receiver accounts with progress display using concurrent workers.
 
     Timing: This function's duration is tracked as 'account_setup_time'.
 
+    The function executes account.set_config_from_qr concurrently using a thread pool
+    with the number of workers specified by args.setup_workers.
+
     Args:
-        args: Command line arguments
+        args: Command line arguments (includes setup_workers for concurrency)
         sender_maker: AccountMaker for the sender's relay
         receiver_maker: AccountMaker for the receiver's relay
 
@@ -289,28 +340,74 @@ def setup_accounts(args, sender_maker, receiver_maker):
     # Calculate total profiles needed
     total_profiles = 1 + args.numrecipients
     profiles_created = 0
+    profiles_lock = threading.Lock()
 
     # Create sender and receiver accounts with spinner
     print_progress("Setting up profiles", profiles_created, total_profiles, 0)
 
-    try:
-        sender = sender_maker.get_relay_account(args.relay1)
-        profiles_created += 1
-        print_progress("Setting up profiles", profiles_created, total_profiles, profiles_created)
-    except Exception as e:
-        print(f"\r✗ Failed to setup sender profile on {args.relay1}: {e}")
+    # Define the setup tasks: list of (maker, domain, is_sender, index)
+    # index is used to track receiver ordering
+    setup_tasks = [(sender_maker, args.relay1, True, 0)]
+    for i in range(args.numrecipients):
+        setup_tasks.append((receiver_maker, args.relay2, False, i))
+
+    # Results storage with thread safety
+    results = {}  # {task_index: account}
+    errors = []   # [(task_index, error)]
+    results_lock = threading.Lock()
+
+    def setup_account_task(task_index, maker, domain, is_sender):
+        """Worker function to create and configure an account.
+
+        This function is executed concurrently by the thread pool.
+        It creates the account and configures it from QR, but does not start IO.
+        """
+        nonlocal profiles_created
+        try:
+            account = maker.create_account(domain)
+            with results_lock:
+                results[task_index] = account
+            with profiles_lock:
+                profiles_created += 1
+                print_progress("Setting up profiles", profiles_created, total_profiles, profiles_created)
+        except Exception as e:
+            with results_lock:
+                errors.append((task_index, e))
+            role = "sender" if is_sender else f"receiver {task_index}"
+            print(f"\r✗ Failed to setup {role} profile on {domain}: {e}")
+
+    # Use ThreadPoolExecutor for concurrent account setup
+    num_workers = min(args.setup_workers, total_profiles)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = []
+        for task_index, (maker, domain, is_sender, _) in enumerate(setup_tasks):
+            future = executor.submit(setup_account_task, task_index, maker, domain, is_sender)
+            futures.append(future)
+
+        # Wait for all futures to complete
+        concurrent.futures.wait(futures)
+
+    # Check for errors
+    if errors:
+        print(f"\r✗ Failed to setup {len(errors)} profile(s)")
         sys.exit(1)
 
-    # Create receiver accounts
-    receivers = []
-    for i in range(args.numrecipients):
+    # Extract sender and receivers from results
+    sender = results[0]
+    receivers = [results[i + 1] for i in range(args.numrecipients)]
+
+    # Now bring all accounts online (sequentially to avoid race conditions)
+    try:
+        sender_maker.bring_online(sender, args.relay1)
+    except Exception as e:
+        print(f"\r✗ Failed to bring sender profile online on {args.relay1}: {e}")
+        sys.exit(1)
+
+    for i, receiver in enumerate(receivers):
         try:
-            receiver = receiver_maker.get_relay_account(args.relay2)
-            receivers.append(receiver)
-            profiles_created += 1
-            print_progress("Setting up profiles", profiles_created, total_profiles, profiles_created)
+            receiver_maker.bring_online(receiver, args.relay2)
         except Exception as e:
-            print(f"\r✗ Failed to setup receiver profile {i+1} on {args.relay2}: {e}")
+            print(f"\r✗ Failed to bring receiver profile {i+1} online on {args.relay2}: {e}")
             sys.exit(1)
 
     # Profile setup complete
