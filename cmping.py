@@ -189,6 +189,15 @@ def main():
         action="store_true",
         help="remove all account directories of tested relays to force fresh account creation",
     )
+    parser.add_argument(
+        "--setup-workers",
+        dest="setup_workers",
+        type=int,
+        default=5,
+        choices=range(1, 51),
+        metavar="N",
+        help="number of concurrent workers for account creation (1-50, default 5)",
+    )
     args = parser.parse_args()
     if not args.relay2:
         args.relay2 = args.relay1
@@ -278,10 +287,10 @@ def setup_accounts(args, sender_maker, receiver_maker):
     """Set up sender and receiver accounts with progress display.
 
     Timing: This function's duration is tracked as 'account_setup_time'.
-    Uses concurrent execution with up to 10 workers for profile creation.
+    Uses concurrent execution with configurable workers for profile creation.
 
     Args:
-        args: Command line arguments
+        args: Command line arguments (includes setup_workers for concurrency)
         sender_maker: AccountMaker for the sender's relay
         receiver_maker: AccountMaker for the receiver's relay
 
@@ -311,7 +320,7 @@ def setup_accounts(args, sender_maker, receiver_maker):
             )
         return (index, account)
 
-    # Create all accounts concurrently using up to 10 workers
+    # Create all accounts concurrently using configurable workers
     # Index 0 is sender (uses sender_maker), indices 1..N are receivers (use receiver_maker)
     tasks = [(sender_maker, args.relay1, 0)]  # Sender
     for i in range(args.numrecipients):
@@ -320,7 +329,7 @@ def setup_accounts(args, sender_maker, receiver_maker):
     results = {}
     errors = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.setup_workers) as executor:
         future_to_task = {
             executor.submit(create_account, maker, domain, idx): (domain, idx)
             for maker, domain, idx in tasks

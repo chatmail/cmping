@@ -1,16 +1,13 @@
 
 # cmping changelog 
 
-## 0.18.1.dev0
-
-(in development)
-
 ## 0.18.0
 
 ### Features
 
-- Add concurrent account creation with up to 10 workers during profile setup
+- Add concurrent account creation with configurable workers during profile setup
   - Sender and all receiver accounts are now created in parallel using ThreadPoolExecutor
+  - Add `--setup-workers` option to configure the number of concurrent workers (default: 5)
   - Thread-safe progress tracking with animated spinner
   - Significantly faster setup time when testing with multiple recipients (`-g` option)
   - Collects all errors before exiting for complete failure reporting
