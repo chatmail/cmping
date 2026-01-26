@@ -591,7 +591,8 @@ def perform_ping(args):
     """
     base_accounts_dir = xdg_cache_home().joinpath("cmping")
     
-    # Determine unique relays being tested
+    # Determine unique relays being tested. Using a set to deduplicate when
+    # relay1 == relay2 (same relay testing), so we only create one RPC context.
     relays = {args.relay1, args.relay2}
     
     # Handle --reset option: remove account directories for tested relays
@@ -602,7 +603,8 @@ def perform_ping(args):
                 print(f"# Removing account directory for {relay}: {relay_dir}")
                 shutil.rmtree(relay_dir)
     
-    # Create per-relay account directories and RPC instances
+    # Create per-relay account directories and RPC instances.
+    # We manually manage __enter__/__exit__ to handle multiple context managers in a loop.
     relay_contexts = {}  # {relay: RelayContext}
     
     for relay in relays:
