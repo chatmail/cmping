@@ -7,6 +7,7 @@ import ipaddress
 import os
 import queue
 import random
+import shutil
 import signal
 import string
 import sys
@@ -423,6 +424,9 @@ def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
 def perform_ping(args):
     accounts_dir = xdg_cache_home().joinpath("cmping")
     print(f"# using accounts_dir at: {accounts_dir}")
+    if accounts_dir.exists() and not accounts_dir.joinpath("accounts.toml").exists():
+        shutil.rmtree(accounts_dir)
+
     with Rpc(accounts_dir=accounts_dir) as rpc:
         dc = DeltaChat(rpc)
         maker = AccountMaker(dc, verbose=args.verbose)
