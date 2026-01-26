@@ -401,7 +401,7 @@ def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
     Returns:
         int: Number of receivers that successfully joined
     """
-    print("# Waiting for receivers to come online", end="", flush=True)
+    print("# Waiting for receivers to join ping group", end="", flush=True)
     sender_addr = sender.get_config("addr")
     start_time = time.time()
 
@@ -633,11 +633,11 @@ def perform_ping(args):
         Pinger: The pinger object with results
     """
     base_accounts_dir = xdg_cache_home().joinpath("cmping")
-    
+
     # Determine unique relays being tested. Using a set to deduplicate when
     # relay1 == relay2 (same relay testing), so we only create one RPC context.
     relays = {args.relay1, args.relay2}
-    
+
     # Handle --reset option: remove account directories for tested relays
     if args.reset:
         for relay in relays:
@@ -645,17 +645,17 @@ def perform_ping(args):
             if relay_dir.exists():
                 print(f"# Removing account directory for {relay}: {relay_dir}")
                 shutil.rmtree(relay_dir)
-    
+
     # Create per-relay account directories and RPC instances.
     # We manually manage __enter__/__exit__ to handle multiple context managers in a loop.
     relay_contexts = {}  # {relay: RelayContext}
-    
+
     for relay in relays:
         relay_dir = base_accounts_dir.joinpath(relay)
         print(f"# using accounts_dir for {relay} at: {relay_dir}")
         if relay_dir.exists() and not relay_dir.joinpath("accounts.toml").exists():
             shutil.rmtree(relay_dir)
-        
+
         rpc = Rpc(accounts_dir=relay_dir)
         try:
             rpc.__enter__()
@@ -671,7 +671,7 @@ def perform_ping(args):
         dc = DeltaChat(rpc)
         maker = AccountMaker(dc, verbose=args.verbose)
         relay_contexts[relay] = RelayContext(rpc=rpc, dc=dc, maker=maker)
-    
+
     try:
         # Phase 1: Account Setup (timed)
         account_setup_start = time.time()

@@ -1,10 +1,6 @@
 
 # cmping changelog 
 
-## 0.18.1.dev0
-
-(in development)
-
 ## 0.18.0
 
 ### Features
