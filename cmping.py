@@ -19,6 +19,14 @@ from deltachat_rpc_client import DeltaChat, EventType, Rpc
 from xdg_base_dirs import xdg_cache_home
 
 
+def log_event_verbose(event, addr, verbose_level=3):
+    """Helper function to log events at specified verbose level."""
+    if hasattr(event, "msg") and event.msg:
+        print(f"  [{addr}] {event.kind}: {event.msg}")
+    else:
+        print(f"  [{addr}] {event.kind}")
+
+
 def is_ip_address(host):
     """Check if the given host is an IP address."""
     try:
@@ -122,6 +130,14 @@ class AccountMaker:
         self.online = []
         self.verbose = verbose
 
+    def _log_event(self, event, addr):
+        """Helper method to log events at verbose level 3."""
+        if self.verbose >= 3:
+            if hasattr(event, "msg") and event.msg:
+                print(f"  {event.kind}: {event.msg} [{addr}]")
+            else:
+                print(f"  {event.kind} [{addr}]")
+
     def wait_all_online(self):
         remaining = list(self.online)
         while remaining:
@@ -129,11 +145,21 @@ class AccountMaker:
             while True:
                 event = ac.wait_for_event()
                 if event.kind == EventType.IMAP_INBOX_IDLE:
+                    if self.verbose >= 3:
+                        addr = ac.get_config("addr")
+                        print(f"✓ IMAP_INBOX_IDLE: {addr} is now idle and ready")
                     break
                 elif event.kind == EventType.ERROR and self.verbose >= 1:
                     print(f"✗ ERROR during profile setup: {event.msg}")
+                elif self.verbose >= 3:
+                    # Show all events during online phase when verbose level 3
+                    addr = ac.get_config("addr")
+                    self._log_event(event, addr)
 
     def _add_online(self, account):
+        if self.verbose >= 3:
+            addr = account.get_config("addr")
+            print(f"  Starting I/O for account: {addr}")
         account.start_io()
         self.online.append(account)
 
@@ -146,12 +172,21 @@ class AccountMaker:
                 addr_domain = addr.split("@")[1] if "@" in addr else None
                 if addr_domain == domain:
                     if account not in self.online:
+                        if self.verbose >= 3:
+                            print(f"  Reusing existing account: {addr}")
                         break
         else:
             account = self.dc.add_account()
+            if self.verbose >= 3:
+                print(f"  Creating new account for domain: {domain}")
             qr_url = create_qr_url(domain)
             try:
+                if self.verbose >= 3:
+                    print(f"  Configuring account from QR: {domain}")
                 account.set_config_from_qr(qr_url)
+                if self.verbose >= 3:
+                    addr = account.get_config("addr")
+                    print(f"  Account configured: {addr}")
             except Exception as e:
                 print(f"✗ Failed to configure profile on {domain}: {e}")
                 raise
@@ -211,26 +246,33 @@ def setup_accounts(args, maker):
             sys.exit(1)
 
     # Profile setup complete
-    print(f"\r# Setting up profiles... Done!                    ")
+    print("\r# Setting up profiles... Done!")
 
     return sender, receivers
 
 
-def create_and_promote_group(sender, receivers):
+def create_and_promote_group(sender, receivers, verbose=0):
     """Create a group chat and send initial message to promote it.
 
     Returns:
         group: The created group chat object
     """
     # Create a group chat from sender and add all receivers
+    if verbose >= 3:
+        print("  Creating group chat 'cmping'")
     group = sender.create_group("cmping")
     for receiver in receivers:
         # Create a contact for the receiver account and add to group
         contact = sender.create_contact(receiver)
+        if verbose >= 3:
+            receiver_addr = receiver.get_config("addr")
+            print(f"  Adding {receiver_addr} to group")
         group.add_contact(contact)
 
     # Send an initial message to promote the group
     # This sends invitations to all members; progress is shown in wait_for_receivers_to_join()
+    if verbose >= 3:
+        print("  Sending group initialization message")
     group.send_text("cmping group chat initialized")
 
     return group
@@ -273,6 +315,11 @@ def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
         try:
             while time.time() < deadline:
                 event = receiver.wait_for_event()
+                if args.verbose >= 3:
+                    # Log all events during group joining phase
+                    receiver_addr = receiver.get_config("addr")
+                    log_event_verbose(event, receiver_addr)
+
                 if event.kind == EventType.INCOMING_MSG:
                     msg = receiver.get_message_by_id(event.msg_id)
                     snapshot = msg.get_snapshot()
@@ -425,7 +472,7 @@ def perform_ping(args):
         print("\r# Waiting for profiles to be online... Done!   ")
 
         # Create group and promote it
-        group = create_and_promote_group(sender, receivers)
+        group = create_and_promote_group(sender, receivers, verbose=args.verbose)
 
         # Wait for all receivers to join the group
         wait_for_receivers_to_join(args, sender, receivers)
@@ -591,6 +638,13 @@ class Pinger:
                             received_by_receiver[seq].add(receiver_idx)
                             yield seq, ms_duration, len(text), receiver_idx
                             start_clock = time.time()
+                    elif self.args.verbose >= 3:
+                        # Log non-ping messages at verbose level 3
+                        receiver_addr = self.receivers_addrs[receiver_idx]
+                        ellipsis = "..." if len(text) > 50 else ""
+                        print(
+                            f"  [{receiver_addr}] INCOMING_MSG (non-ping): {text[:50]}{ellipsis}"
+                        )
                 elif event.kind == EventType.ERROR and self.args.verbose >= 1:
                     print(f"✗ ERROR: {event.msg}")
                 elif event.kind == EventType.MSG_FAILED and self.args.verbose >= 1:
@@ -603,6 +657,10 @@ class Pinger:
                 ):
                     ms_now = (time.time() - start_clock) * 1000
                     print(f"INFO {ms_now:07.1f}ms: {event.msg}")
+                elif self.args.verbose >= 3:
+                    # Log all other events at verbose level 3
+                    receiver_addr = self.receivers_addrs[receiver_idx]
+                    log_event_verbose(event, receiver_addr)
             except queue.Empty:
                 # Timeout occurred, check if we should continue
                 continue
