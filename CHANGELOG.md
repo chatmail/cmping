@@ -1,9 +1,29 @@
 
 # cmping changelog 
 
-## 0.16.1.dev0
+## 0.17.1.dev0
 
 (in development)
+
+## 0.17.0
+
+### Features
+
+- Add per-relay account isolation: Each relay domain now gets its own separate database at `~/.cache/cmping/<relay_domain>/`
+  - Ensures completely isolated account databases between different relays
+  - Prevents potential conflicts when testing multiple relays
+  - Uses `RelayContext` dataclass to cleanly encapsulate RPC, DeltaChat, and AccountMaker per relay
+
+- Add `--reset` option to force fresh account creation
+  - Removes account directories for tested relays before starting
+  - Useful for testing with clean state or after account issues
+  - Only affects relays being tested, not other cached accounts
+
+### Improvements
+
+- Added `wait_profiles_online_multi()` function to handle concurrent profile initialization across multiple relays
+- Better error handling during RPC initialization with proper cleanup of already-initialized contexts
+- Improved cleanup logging instead of silently swallowing exceptions
 
 ## 0.16.0
 
