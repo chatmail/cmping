@@ -271,21 +271,23 @@ def setup_accounts(args, maker):
     # Calculate total profiles needed
     total_profiles = 1 + args.numrecipients
     profiles_created = [0]  # Use list for mutable counter in closure
+    spinner_idx = [0]  # Separate spinner counter
     lock = threading.Lock()
 
     # Create sender and receiver accounts with spinner
-    print_progress("Setting up profiles", profiles_created[0], total_profiles, 0)
+    print_progress("Setting up profiles", profiles_created[0], total_profiles, spinner_idx[0])
 
     def create_account(domain, index):
         """Create a single account on the specified domain."""
         account = maker.get_relay_account(domain)
         with lock:
             profiles_created[0] += 1
+            spinner_idx[0] += 1
             print_progress(
                 "Setting up profiles",
                 profiles_created[0],
                 total_profiles,
-                profiles_created[0],
+                spinner_idx[0],
             )
         return (index, account)
 
@@ -314,7 +316,7 @@ def setup_accounts(args, maker):
                 else:
                     errors.append(f"Failed to setup receiver profile {idx} on {domain}: {e}")
 
-    # Check for errors
+    # Check for errors - must have all accounts to proceed
     if errors:
         for error in errors:
             print(f"\r✗ {error}")
