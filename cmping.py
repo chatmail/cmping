@@ -262,8 +262,10 @@ class AccountMaker:
         # Try to find an existing account for this domain/IP
         # Note: get_all_accounts returns all accounts, we need to check
         # if there's one available for this domain that isn't already in use
+        # Get account list outside the lock, then lock only for the claim check
+        all_accounts = self.dc.get_all_accounts()
         with self._lock:
-            for account in self.dc.get_all_accounts():
+            for account in all_accounts:
                 addr = account.get_config("configured_addr")
                 if addr is not None:
                     # Extract the domain/IP from the configured address
@@ -290,6 +292,9 @@ class AccountMaker:
                 addr = account.get_config("addr")
                 print(f"  Account configured: {addr}")
         except Exception as e:
+            # Clean up the claimed account on failure
+            with self._lock:
+                self._claimed.discard(account)
             print(f"✗ Failed to configure profile on {domain}: {e}")
             raise
 
@@ -356,7 +361,7 @@ def setup_accounts(args, sender_maker, receiver_maker):
     errors = []   # [(task_index, error)]
     results_lock = threading.Lock()
 
-    def setup_account_task(task_index, maker, domain, is_sender):
+    def setup_account_task(task_index, maker, domain, is_sender, receiver_index):
         """Worker function to create and configure an account.
 
         This function is executed concurrently by the thread pool.
@@ -373,15 +378,15 @@ def setup_accounts(args, sender_maker, receiver_maker):
         except Exception as e:
             with results_lock:
                 errors.append((task_index, e))
-            role = "sender" if is_sender else f"receiver {task_index}"
+            role = "sender" if is_sender else f"receiver {receiver_index + 1}"
             print(f"\r✗ Failed to setup {role} profile on {domain}: {e}")
 
     # Use ThreadPoolExecutor for concurrent account setup
     num_workers = min(args.setup_workers, total_profiles)
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
         futures = []
-        for task_index, (maker, domain, is_sender, _) in enumerate(setup_tasks):
-            future = executor.submit(setup_account_task, task_index, maker, domain, is_sender)
+        for task_index, (maker, domain, is_sender, receiver_index) in enumerate(setup_tasks):
+            future = executor.submit(setup_account_task, task_index, maker, domain, is_sender, receiver_index)
             futures.append(future)
 
         # Wait for all futures to complete
