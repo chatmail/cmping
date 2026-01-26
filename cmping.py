@@ -242,8 +242,7 @@ class AccountMaker:
                     self._log_event(event, addr)
 
     def get_relay_account(self, domain):
-        # Use lock to protect the entire account lookup/creation process
-        # This prevents race conditions when multiple threads try to create accounts
+        # First, check if we can reuse an existing account (under lock)
         with self._lock:
             # Try to find an existing account for this domain/IP
             for account in self.dc.get_all_accounts():
@@ -255,29 +254,42 @@ class AccountMaker:
                         if account not in self.online:
                             if self.verbose >= 3:
                                 print(f"  Reusing existing account: {addr}")
+                            # Mark as online immediately to prevent other threads from reusing
+                            self.online.append(account)
+                            found_existing = True
                             break
             else:
+                # No existing account found, create a new one
                 account = self.dc.add_account()
-                if self.verbose >= 3:
-                    print(f"  Creating new account for domain: {domain}")
-                qr_url = create_qr_url(domain)
-                try:
-                    if self.verbose >= 3:
-                        print(f"  Configuring account from QR: {domain}")
-                    account.set_config_from_qr(qr_url)
-                    if self.verbose >= 3:
-                        addr = account.get_config("addr")
-                        print(f"  Account configured: {addr}")
-                except Exception as e:
-                    print(f"✗ Failed to configure profile on {domain}: {e}")
-                    raise
+                # Mark as online immediately to prevent duplicate creation
+                self.online.append(account)
+                found_existing = False
 
-            # Start I/O within the lock to ensure online list consistency
+        # Configure and start I/O outside the lock (this is the slow part)
+        if not found_existing:
             if self.verbose >= 3:
-                addr = account.get_config("addr")
-                print(f"  Starting I/O for account: {addr}")
-            account.start_io()
-            self.online.append(account)
+                print(f"  Creating new account for domain: {domain}")
+            qr_url = create_qr_url(domain)
+            try:
+                if self.verbose >= 3:
+                    print(f"  Configuring account from QR: {domain}")
+                account.set_config_from_qr(qr_url)
+                if self.verbose >= 3:
+                    addr = account.get_config("addr")
+                    print(f"  Account configured: {addr}")
+            except Exception as e:
+                print(f"✗ Failed to configure profile on {domain}: {e}")
+                # Remove from online list on failure
+                with self._lock:
+                    if account in self.online:
+                        self.online.remove(account)
+                raise
+
+        # Start I/O outside the lock (this is a slow network operation)
+        if self.verbose >= 3:
+            addr = account.get_config("addr")
+            print(f"  Starting I/O for account: {addr}")
+        account.start_io()
 
         return account
 

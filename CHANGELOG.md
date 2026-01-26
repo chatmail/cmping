@@ -1,6 +1,10 @@
 
 # cmping changelog 
 
+## 0.18.1.dev0
+
+(in development)
+
 ## 0.18.0
 
 ### Features
@@ -15,9 +19,9 @@
 ### Bug Fixes
 
 - Fix race conditions in AccountMaker class during concurrent account creation
-  - Added thread lock to protect `online` list access
-  - Protected entire account lookup/creation process to prevent duplicate accounts
+  - Use fine-grained locking: only lock quick operations (account lookup/creation), not slow operations (configuration/I/O)
   - Protected error collection in `wait_profiles_online_multi()` function
+  - Account configuration and I/O start now run in parallel for maximum throughput
 
 ## 0.17.0
 
