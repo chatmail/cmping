@@ -9,7 +9,7 @@ Message Flow:
 
 2. GROUP CREATION: Sender creates a group chat and adds all receivers
    - An initialization message is sent to promote the group
-   - All receivers must accept the group invitation before ping begins
+   - All receivers must receive initialization message before ping begins
 
 3. PING SEND: Sender transmits messages to the group at specified intervals
    - Messages contain: unique-id timestamp sequence-number
@@ -233,6 +233,10 @@ class AccountMaker:
         if self.verbose >= 3:
             addr = account.get_config("addr")
             print(f"  Starting I/O for account: {addr}")
+
+        # Enable bot mode in all accounts before starting I/O
+        # so we don't have to accept contact requests.
+        account.set_config("bot", "1")
         account.start_io()
         self.online.append(account)
 
@@ -401,7 +405,6 @@ def wait_for_receivers_to_join(args, sender, receivers, timeout_seconds=30):
                     ):
                         chat_id = snapshot.chat_id
                         receiver_group = receiver.get_chat_by_id(chat_id)
-                        receiver_group.accept()
                         receiver_threads_queue.put(
                             ("joined", idx, receiver.get_config("addr"))
                         )
