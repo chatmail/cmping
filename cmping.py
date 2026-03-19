@@ -20,6 +20,7 @@ Message Flow:
 """
 
 import argparse
+import contextlib
 import ipaddress
 import os
 import queue
@@ -450,32 +451,24 @@ def perform_ping(args):
                 shutil.rmtree(relay_dir)
     
     # Create per-relay account directories and RPC instances.
-    # We manually manage __enter__/__exit__ to handle multiple context managers in a loop.
     relay_contexts = {}  # {relay: RelayContext}
-    
-    for relay in relays:
-        relay_dir = base_accounts_dir.joinpath(relay)
-        print(f"# using accounts_dir for {relay} at: {relay_dir}")
-        if relay_dir.exists() and not relay_dir.joinpath("accounts.toml").exists():
-            shutil.rmtree(relay_dir)
-        
-        rpc = Rpc(accounts_dir=relay_dir)
-        try:
-            rpc.__enter__()
-        except Exception as e:
-            print(f"✗ Failed to initialize RPC for {relay}: {e}")
-            # Clean up any already-initialized contexts
-            for ctx in relay_contexts.values():
-                try:
-                    ctx.rpc.__exit__(None, None, None)
-                except Exception:
-                    pass
-            raise
-        dc = DeltaChat(rpc)
-        maker = AccountMaker(dc, verbose=args.verbose)
-        relay_contexts[relay] = RelayContext(rpc=rpc, dc=dc, maker=maker)
-    
-    try:
+
+    with contextlib.ExitStack() as exit_stack:
+        for relay in relays:
+            relay_dir = base_accounts_dir.joinpath(relay)
+            print(f"# using accounts_dir for {relay} at: {relay_dir}")
+            if relay_dir.exists() and not relay_dir.joinpath("accounts.toml").exists():
+                shutil.rmtree(relay_dir)
+
+            try:
+                rpc = exit_stack.enter_context(Rpc(accounts_dir=relay_dir))
+            except Exception as e:
+                print(f"✗ Failed to initialize RPC for {relay}: {e}")
+                raise
+            dc = DeltaChat(rpc)
+            maker = AccountMaker(dc, verbose=args.verbose)
+            relay_contexts[relay] = RelayContext(rpc=rpc, dc=dc, maker=maker)
+
         # Phase 1: Account Setup (timed)
         account_setup_start = time.time()
 
@@ -590,13 +583,6 @@ def perform_ping(args):
             print(f"recv rate: {recv_rate:.2f} msg/s")
 
         return pinger
-    finally:
-        # Clean up all RPC contexts
-        for relay, ctx in relay_contexts.items():
-            try:
-                ctx.rpc.__exit__(None, None, None)
-            except Exception as e:
-                print(f"# Warning: cleanup failed for {relay}: {e}")
 
 
 class Pinger:
