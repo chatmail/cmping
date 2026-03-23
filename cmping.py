@@ -38,6 +38,23 @@ from statistics import stdev
 from deltachat_rpc_client import DeltaChat, EventType, Rpc
 from xdg_base_dirs import xdg_cache_home
 
+# Controls CLI output (progress spinners, per-message RTT lines, statistics).
+# Library callers can set this to False to suppress all terminal output while
+# keeping structured log messages (phase=online, phase=setup, etc.) visible.
+_cli_output = True
+
+
+def set_cli_output(enabled):
+    """Enable or disable CLI output (progress spinners, statistics)."""
+    global _cli_output
+    _cli_output = enabled
+
+
+class CMPingError(Exception):
+    """Raised when cmping encounters a non-recoverable error during probing."""
+    pass
+
+
 # Spinner characters for progress display
 SPINNER_CHARS = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -191,7 +208,11 @@ def main():
     if not args.relay2:
         args.relay2 = args.relay1
 
-    pinger = perform_ping(args)
+    try:
+        pinger = perform_ping(args)
+    except CMPingError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        raise SystemExit(1)
     expected_total = pinger.sent * args.numrecipients
     raise SystemExit(0 if pinger.received == expected_total else 1)
 
@@ -301,8 +322,7 @@ def setup_accounts(args, sender_maker, receiver_maker):
         profiles_created += 1
         print_progress("Setting up profiles", profiles_created, total_profiles, profiles_created)
     except Exception as e:
-        print(f"\r✗ Failed to setup sender profile on {args.relay1}: {e}")
-        sys.exit(1)
+        raise CMPingError(f"Failed to setup sender profile on {args.relay1}: {e}") from e
 
     # Create receiver accounts
     receivers = []
@@ -313,8 +333,9 @@ def setup_accounts(args, sender_maker, receiver_maker):
             profiles_created += 1
             print_progress("Setting up profiles", profiles_created, total_profiles, profiles_created)
         except Exception as e:
-            print(f"\r✗ Failed to setup receiver profile {i+1} on {args.relay2}: {e}")
-            sys.exit(1)
+            raise CMPingError(
+                f"Failed to setup receiver profile {i+1} on {args.relay2}: {e}"
+            ) from e
 
     # Profile setup complete
     print_progress("Setting up profiles", done=True)
@@ -350,7 +371,7 @@ def wait_profiles_online(maker):
         maker: AccountMaker instance with accounts to wait for
 
     Raises:
-        SystemExit: If waiting for profiles fails
+        CMPingError: If waiting for profiles fails
     """
     # Flag to indicate when wait_all_online is complete
     online_complete = threading.Event()
@@ -379,8 +400,9 @@ def wait_profiles_online(maker):
     wait_thread.join()
 
     if online_error:
-        print(f"\n✗ Timeout or error waiting for profiles to be online: {online_error}")
-        sys.exit(1)
+        raise CMPingError(
+            f"Timeout or error waiting for profiles to be online: {online_error}"
+        ) from online_error
 
     print_progress("Waiting for profiles to be online", done=True)
 
@@ -392,7 +414,7 @@ def wait_profiles_online_multi(makers):
         makers: List of AccountMaker instances with accounts to wait for
 
     Raises:
-        SystemExit: If waiting for profiles fails
+        CMPingError: If waiting for profiles fails
     """
     online_errors = []
 
@@ -420,14 +442,22 @@ def wait_profiles_online_multi(makers):
         t.join()
 
     if online_errors:
-        print(f"\n✗ Timeout or error waiting for profiles to be online: {online_errors[0]}")
-        sys.exit(1)
+        raise CMPingError(
+            f"Timeout or error waiting for profiles to be online: {online_errors[0]}"
+        ) from online_errors[0]
 
     print_progress("Waiting for profiles to be online", done=True)
 
 
-def perform_ping(args):
+def perform_ping(args, accounts_dir=None):
     """Main ping execution function with timing measurements.
+
+    Args:
+        args: Namespace with relay1, relay2, count, interval, verbose,
+              numrecipients, reset attributes.
+        accounts_dir: Optional base directory for account storage.
+              Defaults to $XDG_CACHE_HOME/cmping. Override this to isolate
+              concurrent probes (each needs its own DB to avoid locking).
 
     Timing Phases:
     1. account_setup_time: Time to create and configure all accounts
@@ -436,12 +466,18 @@ def perform_ping(args):
     Returns:
         Pinger: The pinger object with results
     """
-    base_accounts_dir = xdg_cache_home().joinpath("cmping")
-    
+    if accounts_dir is not None:
+        from pathlib import Path
+        base_accounts_dir = Path(accounts_dir)
+    else:
+        base_accounts_dir = xdg_cache_home().joinpath("cmping")
+
+    # Validate relay names before using them as path components.
+
     # Determine unique relays being tested. Using a set to deduplicate when
     # relay1 == relay2 (same relay testing), so we only create one RPC context.
     relays = {args.relay1, args.relay2}
-    
+
     # Handle --reset option: remove account directories for tested relays
     if args.reset:
         for relay in relays:
@@ -449,7 +485,7 @@ def perform_ping(args):
             if relay_dir.exists():
                 print(f"# Removing account directory for {relay}: {relay_dir}")
                 shutil.rmtree(relay_dir)
-    
+
     # Create per-relay account directories and RPC instances.
     relay_contexts = {}  # {relay: RelayContext}
 
