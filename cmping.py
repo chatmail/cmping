@@ -23,11 +23,9 @@ import argparse
 import contextlib
 import ipaddress
 import logging
-import os
 import queue
 import random
 import shutil
-import signal
 import string
 import sys
 import threading
@@ -36,7 +34,7 @@ import urllib.parse
 from dataclasses import dataclass
 from statistics import stdev
 
-from deltachat_rpc_client import DeltaChat, EventType, Rpc
+from deltachat_rpc_client import AttrDict, DeltaChat, EventType, Rpc
 from xdg_base_dirs import xdg_cache_home
 
 log = logging.getLogger("cmping")
@@ -254,12 +252,20 @@ class AccountMaker:
             else:
                 log.debug(f"{event.kind} [{addr}]")
 
-    def wait_all_online(self):
+    def wait_all_online(self, timeout=None):
+        deadline = time.time() + timeout if timeout is not None else None
         remaining = list(self.online)
         while remaining:
             ac = remaining.pop()
+            eq = ac._rpc.get_queue(ac.id)
             while True:
-                event = ac.wait_for_event()
+                if deadline is not None and time.time() >= deadline:
+                    addr = ac.get_config("addr")
+                    raise CMPingError(f"Timeout waiting for {addr} to come online")
+                try:
+                    event = AttrDict(eq.get(timeout=1.0))
+                except queue.Empty:
+                    continue
                 if event.kind == EventType.IMAP_INBOX_IDLE:
                     if self.verbose >= 3:
                         addr = ac.get_config("addr")
@@ -387,11 +393,12 @@ def create_group(sender, receivers, verbose=0):
     return group
 
 
-def wait_profiles_online(maker):
+def wait_profiles_online(maker, timeout=None):
     """Wait for all profiles to be online with spinner progress.
 
     Args:
         maker: AccountMaker instance with accounts to wait for
+        timeout: Optional seconds before giving up and raising CMPingError
 
     Raises:
         CMPingError: If waiting for profiles fails
@@ -403,7 +410,7 @@ def wait_profiles_online(maker):
     def wait_online_thread():
         nonlocal online_error
         try:
-            maker.wait_all_online()
+            maker.wait_all_online(timeout=timeout)
         except Exception as e:
             online_error = e
         finally:
@@ -430,11 +437,12 @@ def wait_profiles_online(maker):
     print_progress("Waiting for profiles to be online", done=True)
 
 
-def wait_profiles_online_multi(makers):
+def wait_profiles_online_multi(makers, timeout=None):
     """Wait for all profiles to be online with spinner progress.
 
     Args:
         makers: List of AccountMaker instances with accounts to wait for
+        timeout: Optional seconds before giving up and raising CMPingError
 
     Raises:
         CMPingError: If waiting for profiles fails
@@ -443,7 +451,7 @@ def wait_profiles_online_multi(makers):
 
     def wait_online_thread(maker):
         try:
-            maker.wait_all_online()
+            maker.wait_all_online(timeout=timeout)
         except Exception as e:
             online_errors.append(e)
 
@@ -472,7 +480,7 @@ def wait_profiles_online_multi(makers):
     print_progress("Waiting for profiles to be online", done=True)
 
 
-def perform_ping(args, accounts_dir=None):
+def perform_ping(args, accounts_dir=None, timeout=None):
     """Main ping execution function with timing measurements.
 
     Args:
@@ -481,6 +489,7 @@ def perform_ping(args, accounts_dir=None):
         accounts_dir: Optional base directory for account storage.
               Defaults to $XDG_CACHE_HOME/cmping. Override this to isolate
               concurrent probes (each needs its own DB to avoid locking).
+        timeout: Optional per-phase timeout in seconds.
 
     Timing Phases:
     1. account_setup_time: Time to create and configure all accounts
@@ -539,7 +548,7 @@ def perform_ping(args, accounts_dir=None):
         # Wait for all accounts to be online with timeout feedback
         # Combine all makers for waiting
         all_makers = [relay_contexts[r].maker for r in relays]
-        wait_profiles_online_multi(all_makers)
+        wait_profiles_online_multi(all_makers, timeout=timeout)
 
         account_setup_time = time.time() - account_setup_start
 
@@ -549,10 +558,12 @@ def perform_ping(args, accounts_dir=None):
         message_start = time.time()
 
         pinger = Pinger(args, sender, group, receivers)
+        if timeout is not None:
+            pinger.deadline = time.time() + timeout
         received = {}
         # Track current sequence for output formatting
         current_seq = None
-        # Track timing for each sequence: {seq: {'count': N, 'first_time': ms, 'last_time': ms, 'size': bytes}}
+        # Track timing for each sequence
         seq_tracking = {}
         # Gate CLI output on _cli_output flag -- silent when used as library.
         show_output = _cli_output
@@ -609,6 +620,7 @@ def perform_ping(args, accounts_dir=None):
         except KeyboardInterrupt:
             pass
 
+        pinger._send_thread.join(timeout=2.0)
         message_time = time.time() - message_start
 
         if show_output:
@@ -692,10 +704,17 @@ class Pinger:
         )
         ALPHANUMERIC = string.ascii_lowercase + string.digits
         self.tx = "".join(random.choices(ALPHANUMERIC, k=30))
-        t = threading.Thread(target=self.send_pings, daemon=True)
         self.sent = 0
         self.received = 0
-        t.start()
+        # Optional wall-clock deadline for the messaging phase. When set,
+        # send_pings() stops sending and receive() stops waiting at this time.
+        # Set externally (e.g. by perform_ping) after setup phases complete.
+        self.deadline = None
+        # Signaled by send_pings() when it finishes so receive() can compute
+        # a default deadline without the old os.kill(SIGINT) hack.
+        self._stop_event = threading.Event()
+        self._send_thread = threading.Thread(target=self.send_pings, daemon=True)
+        self._send_thread.start()
 
     @property
     def loss(self):
@@ -707,15 +726,21 @@ class Pinger:
 
         Each message contains: unique_id timestamp sequence_number
         Flow: Sender -> SMTP relay1 -> IMAP relay2 -> All receivers
+
+        Respects self.deadline: stops sending early when the wall clock passes
+        the deadline so we don't fire pings we'll never wait for.
+
+        When all pings are sent, signals _stop_event so receive() can set a
+        grace-period deadline instead of blocking indefinitely.
         """
         for seq in range(self.args.count):
+            if self.deadline is not None and time.time() >= self.deadline:
+                break
             text = f"{self.tx} {time.time():.4f} {seq:17}"
             self.group.send_text(text)
             self.sent += 1
             time.sleep(self.args.interval)
-        # we sent all pings, let's wait a bit, then force quit if main didn't finish
-        time.sleep(60)
-        os.kill(os.getpid(), signal.SIGINT)
+        self._stop_event.set()
 
     def receive(self):
         """Receive ping messages from all receivers.
@@ -735,12 +760,20 @@ class Pinger:
         # Create a queue to collect events from all receivers
         event_queue = queue.Queue()
 
+        stop_event = threading.Event()
+
         def receiver_thread(receiver_idx, receiver):
             """Thread function to listen to events from a single receiver."""
-            while True:
+            # Use a timeout-based poll so the thread exits promptly when
+            # stop_event is set, rather than blocking indefinitely on
+            # queue.get() inside wait_for_event() and leaking across rounds.
+            account_queue = receiver._rpc.get_queue(receiver.id)
+            while not stop_event.is_set():
                 try:
-                    event = receiver.wait_for_event()
-                    event_queue.put((receiver_idx, receiver, event))
+                    item = account_queue.get(timeout=1.0)
+                    event_queue.put((receiver_idx, receiver, AttrDict(item)))
+                except queue.Empty:
+                    continue
                 except Exception:
                     # If there's an error, put it in the queue
                     event_queue.put((receiver_idx, receiver, None))
@@ -755,54 +788,63 @@ class Pinger:
             t.start()
             threads.append(t)
 
-        while num_pending > 0:
-            try:
-                receiver_idx, receiver, event = event_queue.get(timeout=1.0)
-                if event is None:
-                    continue
+        try:
+            while num_pending > 0:
+                # When send_pings finishes and no explicit deadline was set,
+                # compute a default grace period so receive() doesn't block
+                # indefinitely.  Replaces the old os.kill(SIGINT) hack.
+                if self.deadline is None and self._stop_event.is_set():
+                    self.deadline = time.time() + 60.0
+                if self.deadline is not None and time.time() >= self.deadline:
+                    break
+                try:
+                    receiver_idx, receiver, event = event_queue.get(timeout=1.0)
+                    if event is None:
+                        continue
 
-                if event.kind == EventType.INCOMING_MSG:
-                    msg = receiver.get_message_by_id(event.msg_id)
-                    text = msg.get_snapshot().text
-                    parts = text.strip().split()
-                    if len(parts) == 3 and parts[0] == self.tx:
-                        seq = int(parts[2])
-                        if seq not in received_by_receiver:
-                            received_by_receiver[seq] = set()
-                        if receiver_idx not in received_by_receiver[seq]:
-                            ms_duration = (time.time() - float(parts[1])) * 1000
-                            self.received += 1
-                            num_pending -= 1
-                            received_by_receiver[seq].add(receiver_idx)
-                            yield seq, ms_duration, len(text), receiver_idx
-                            start_clock = time.time()
+                    if event.kind == EventType.INCOMING_MSG:
+                        msg = receiver.get_message_by_id(event.msg_id)
+                        text = msg.get_snapshot().text
+                        parts = text.strip().split()
+                        if len(parts) == 3 and parts[0] == self.tx:
+                            seq = int(parts[2])
+                            if seq not in received_by_receiver:
+                                received_by_receiver[seq] = set()
+                            if receiver_idx not in received_by_receiver[seq]:
+                                ms_duration = (time.time() - float(parts[1])) * 1000
+                                self.received += 1
+                                num_pending -= 1
+                                received_by_receiver[seq].add(receiver_idx)
+                                yield seq, ms_duration, len(text), receiver_idx
+                                start_clock = time.time()
+                        elif self.args.verbose >= 3:
+                            # Log non-ping messages at verbose level 3
+                            receiver_addr = self.receivers_addrs[receiver_idx]
+                            ellipsis = "..." if len(text) > 50 else ""
+                            log.debug(f"[{receiver_addr}] INCOMING_MSG (non-ping): {text[:50]}{ellipsis}")
+                    elif event.kind == EventType.ERROR and self.args.verbose >= 1:
+                        log.warning(f"ERROR: {event.msg}")
+                    elif event.kind == EventType.MSG_FAILED and self.args.verbose >= 1:
+                        msg = receiver.get_message_by_id(event.msg_id)
+                        text = msg.get_snapshot().text
+                        log.warning(f"Message failed: {text}")
+                    elif (
+                        event.kind in (EventType.INFO, EventType.WARNING)
+                        and self.args.verbose >= 1
+                    ):
+                        ms_now = (time.time() - start_clock) * 1000
+                        log.info(f"{ms_now:.1f}ms: {event.msg}")
                     elif self.args.verbose >= 3:
-                        # Log non-ping messages at verbose level 3
+                        # Log all other events at verbose level 3
                         receiver_addr = self.receivers_addrs[receiver_idx]
-                        ellipsis = "..." if len(text) > 50 else ""
-                        log.debug(
-                            "[%s] INCOMING_MSG (non-ping): %s%s",
-                            receiver_addr, text[:50], ellipsis,
-                        )
-                elif event.kind == EventType.ERROR and self.args.verbose >= 1:
-                    log.warning(f"ERROR: {event.msg}")
-                elif event.kind == EventType.MSG_FAILED and self.args.verbose >= 1:
-                    msg = receiver.get_message_by_id(event.msg_id)
-                    text = msg.get_snapshot().text
-                    log.warning(f"Message failed: {text}")
-                elif (
-                    event.kind in (EventType.INFO, EventType.WARNING)
-                    and self.args.verbose >= 1
-                ):
-                    ms_now = (time.time() - start_clock) * 1000
-                    log.info(f"{ms_now:.1f}ms: {event.msg}")
-                elif self.args.verbose >= 3:
-                    # Log all other events at verbose level 3
-                    receiver_addr = self.receivers_addrs[receiver_idx]
-                    log_event_verbose(event, receiver_addr)
-            except queue.Empty:
-                # Timeout occurred, check if we should continue
-                continue
+                        log_event_verbose(event, receiver_addr)
+                except queue.Empty:
+                    # Timeout occurred, check if we should continue
+                    continue
+        finally:
+            stop_event.set()
+            for t in threads:
+                t.join(timeout=2.0)
 
 
 if __name__ == "__main__":
