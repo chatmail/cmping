@@ -22,6 +22,7 @@ Message Flow:
 import argparse
 import contextlib
 import ipaddress
+import logging
 import os
 import queue
 import random
@@ -37,6 +38,8 @@ from statistics import stdev
 
 from deltachat_rpc_client import DeltaChat, EventType, Rpc
 from xdg_base_dirs import xdg_cache_home
+
+log = logging.getLogger("cmping")
 
 # Controls CLI output (progress spinners, per-message RTT lines, statistics).
 # Library callers can set this to False to suppress all terminal output while
@@ -56,7 +59,7 @@ class CMPingError(Exception):
 
 
 # Spinner characters for progress display
-SPINNER_CHARS = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+SPINNER_CHARS = ["|", "/", "-", "\\"]
 
 
 @dataclass
@@ -71,9 +74,9 @@ class RelayContext:
 def log_event_verbose(event, addr, verbose_level=3):
     """Helper function to log events at specified verbose level."""
     if hasattr(event, "msg") and event.msg:
-        print(f"  [{addr}] {event.kind}: {event.msg}")
+        log.debug(f"[{addr}] {event.kind}: {event.msg}")
     else:
-        print(f"  [{addr}] {event.kind}")
+        log.debug(f"[{addr}] {event.kind}")
 
 
 def is_ip_address(host):
@@ -128,6 +131,9 @@ def create_qr_url(domain_or_ip):
 def print_progress(message, current=None, total=None, spinner_idx=0, done=False):
     """Print progress with optional spinner and counter.
 
+    Suppressed when _cli_output is False (library mode) or when the cmping
+    logger is above INFO level.
+
     Args:
         message: The progress message to display
         current: Current count (optional)
@@ -135,14 +141,19 @@ def print_progress(message, current=None, total=None, spinner_idx=0, done=False)
         spinner_idx: Index into SPINNER_CHARS for spinner animation
         done: If True, print 'Done!' and newline
     """
+    if not _cli_output:
+        return
     if done:
-        print(f"\r# {message}... Done!".ljust(60))
+        sys.stderr.write(f"\r# {message}... Done!".ljust(60) + "\n")
+        sys.stderr.flush()
     elif current is not None and total is not None:
         spinner = SPINNER_CHARS[spinner_idx % len(SPINNER_CHARS)]
-        print(f"\r# {message} {spinner} {current}/{total}", end="", flush=True)
+        sys.stderr.write(f"\r# {message} {spinner} {current}/{total}")
+        sys.stderr.flush()
     else:
         spinner = SPINNER_CHARS[spinner_idx % len(SPINNER_CHARS)]
-        print(f"\r# {message} {spinner}", end="", flush=True)
+        sys.stderr.write(f"\r# {message} {spinner}")
+        sys.stderr.flush()
 
 
 def format_duration(seconds):
@@ -208,10 +219,22 @@ def main():
     if not args.relay2:
         args.relay2 = args.relay1
 
+    # Configure logging based on verbose level.
+    if args.verbose >= 3:
+        level = logging.DEBUG
+    elif args.verbose >= 1:
+        level = logging.INFO
+    else:
+        level = logging.WARNING
+    logging.basicConfig(
+        level=level,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+
     try:
         pinger = perform_ping(args)
     except CMPingError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        log.error(f"{e}")
         raise SystemExit(1)
     expected_total = pinger.sent * args.numrecipients
     raise SystemExit(0 if pinger.received == expected_total else 1)
@@ -227,9 +250,9 @@ class AccountMaker:
         """Helper method to log events at verbose level 3."""
         if self.verbose >= 3:
             if hasattr(event, "msg") and event.msg:
-                print(f"  {event.kind}: {event.msg} [{addr}]")
+                log.debug(f"{event.kind}: {event.msg} [{addr}]")
             else:
-                print(f"  {event.kind} [{addr}]")
+                log.debug(f"{event.kind} [{addr}]")
 
     def wait_all_online(self):
         remaining = list(self.online)
@@ -240,10 +263,10 @@ class AccountMaker:
                 if event.kind == EventType.IMAP_INBOX_IDLE:
                     if self.verbose >= 3:
                         addr = ac.get_config("addr")
-                        print(f"✓ IMAP_INBOX_IDLE: {addr} is now idle and ready")
+                        log.debug(f"IMAP_INBOX_IDLE: {addr} is now idle and ready")
                     break
                 elif event.kind == EventType.ERROR and self.verbose >= 1:
-                    print(f"✗ ERROR during profile setup: {event.msg}")
+                    log.warning(f"ERROR during profile setup: {event.msg}")
                 elif self.verbose >= 3:
                     # Show all events during online phase when verbose level 3
                     addr = ac.get_config("addr")
@@ -252,7 +275,7 @@ class AccountMaker:
     def _add_online(self, account):
         if self.verbose >= 3:
             addr = account.get_config("addr")
-            print(f"  Starting I/O for account: {addr}")
+            log.debug(f"Starting I/O for account: {addr}")
 
         # Enable bot mode in all accounts before starting I/O
         # so we don't have to accept contact requests.
@@ -270,28 +293,28 @@ class AccountMaker:
                 if addr_domain == domain:
                     if account not in self.online:
                         if self.verbose >= 3:
-                            print(f"  Reusing existing account: {addr}")
+                            log.debug(f"Reusing existing account: {addr}")
                         break
         else:
             account = self.dc.add_account()
             if self.verbose >= 3:
-                print(f"  Creating new account for domain: {domain}")
+                log.debug(f"Creating new account for domain: {domain}")
             qr_url = create_qr_url(domain)
             try:
                 if self.verbose >= 3:
-                    print(f"  Configuring account from QR: {domain}")
+                    log.debug(f"Configuring account from QR: {domain}")
                 account.set_config_from_qr(qr_url)
                 if self.verbose >= 3:
                     addr = account.get_config("addr")
-                    print(f"  Account configured: {addr}")
+                    log.debug(f"Account configured: {addr}")
             except Exception as e:
-                print(f"✗ Failed to configure profile on {domain}: {e}")
+                log.error(f"Failed to configure profile on {domain}: {e}")
                 raise
 
         try:
             self._add_online(account)
         except Exception as e:
-            print(f"✗ Failed to bring profile online for {domain}: {e}")
+            log.error(f"Failed to bring profile online for {domain}: {e}")
             raise
 
         return account
@@ -351,14 +374,14 @@ def create_group(sender, receivers, verbose=0):
     """
     # Create a group chat from sender and add all receivers
     if verbose >= 3:
-        print("  Creating group chat 'cmping'")
+        log.debug("Creating group chat 'cmping'")
     group = sender.create_group("cmping")
     for receiver in receivers:
         # Create a contact for the receiver account and add to group
         contact = sender.create_contact(receiver)
         if verbose >= 3:
             receiver_addr = receiver.get_config("addr")
-            print(f"  Adding {receiver_addr} to group")
+            log.debug(f"Adding {receiver_addr} to group")
         group.add_contact(contact)
 
     return group
@@ -483,7 +506,7 @@ def perform_ping(args, accounts_dir=None):
         for relay in relays:
             relay_dir = base_accounts_dir.joinpath(relay)
             if relay_dir.exists():
-                print(f"# Removing account directory for {relay}: {relay_dir}")
+                log.info(f"Removing account directory for {relay}: {relay_dir}")
                 shutil.rmtree(relay_dir)
 
     # Create per-relay account directories and RPC instances.
@@ -492,14 +515,14 @@ def perform_ping(args, accounts_dir=None):
     with contextlib.ExitStack() as exit_stack:
         for relay in relays:
             relay_dir = base_accounts_dir.joinpath(relay)
-            print(f"# using accounts_dir for {relay} at: {relay_dir}")
+            log.info(f"using accounts_dir for {relay} at: {relay_dir}")
             if relay_dir.exists() and not relay_dir.joinpath("accounts.toml").exists():
                 shutil.rmtree(relay_dir)
 
             try:
                 rpc = exit_stack.enter_context(Rpc(accounts_dir=relay_dir))
             except Exception as e:
-                print(f"✗ Failed to initialize RPC for {relay}: {e}")
+                log.error(f"Failed to initialize RPC for {relay}: {e}")
                 raise
             dc = DeltaChat(rpc)
             maker = AccountMaker(dc, verbose=args.verbose)
@@ -531,6 +554,8 @@ def perform_ping(args, accounts_dir=None):
         current_seq = None
         # Track timing for each sequence: {seq: {'count': N, 'first_time': ms, 'last_time': ms, 'size': bytes}}
         seq_tracking = {}
+        # Gate CLI output on _cli_output flag -- silent when used as library.
+        show_output = _cli_output
         try:
             for seq, ms_duration, size, receiver_idx in pinger.receive():
                 if seq not in received:
@@ -547,6 +572,9 @@ def perform_ping(args, accounts_dir=None):
                     }
                 seq_tracking[seq]["count"] += 1
                 seq_tracking[seq]["last_time"] = ms_duration
+
+                if not show_output:
+                    continue
 
                 # Print new line for new sequence or first message
                 if current_seq != seq:
@@ -583,27 +611,28 @@ def perform_ping(args, accounts_dir=None):
 
         message_time = time.time() - message_start
 
-        if current_seq is not None:
-            print()  # End last line
+        if show_output:
+            if current_seq is not None:
+                print()  # End last line
 
-        # Print statistics - show full addresses only in verbose >= 2
-        if args.verbose >= 2:
-            receivers_info = pinger.receivers_addrs_str
-        else:
-            receivers_info = f"{len(pinger.receivers_addrs)} receivers"
-        print(f"--- {pinger.addr1} -> {receivers_info} statistics ---")
-        print(
-            f"{pinger.sent} transmitted, {pinger.received} received, {pinger.loss:.2f}% loss"
-        )
-        if received:
-            all_durations = [d for durations in received.values() for d in durations]
-            rmin = min(all_durations)
-            ravg = sum(all_durations) / len(all_durations)
-            rmax = max(all_durations)
-            rmdev = stdev(all_durations) if len(all_durations) >= 2 else rmax
+            # Print statistics - show full addresses only in verbose >= 2
+            if args.verbose >= 2:
+                receivers_info = pinger.receivers_addrs_str
+            else:
+                receivers_info = f"{len(pinger.receivers_addrs)} receivers"
+            print(f"--- {pinger.addr1} -> {receivers_info} statistics ---")
             print(
-                f"rtt min/avg/max/mdev = {rmin:.3f}/{ravg:.3f}/{rmax:.3f}/{rmdev:.3f} ms"
+                f"{pinger.sent} transmitted, {pinger.received} received, {pinger.loss:.2f}% loss"
             )
+            if received:
+                all_durations = [d for durations in received.values() for d in durations]
+                rmin = min(all_durations)
+                ravg = sum(all_durations) / len(all_durations)
+                rmax = max(all_durations)
+                rmdev = stdev(all_durations) if len(all_durations) >= 2 else rmax
+                print(
+                    f"rtt min/avg/max/mdev = {rmin:.3f}/{ravg:.3f}/{rmax:.3f}/{rmdev:.3f} ms"
+                )
 
         # Print timing and rate statistics
         print("--- timing statistics ---")
@@ -656,8 +685,10 @@ class Pinger:
         self.relay1 = self.addr1.split("@")[1]
         self.relay2 = self.receivers_addrs[0].split("@")[1]
 
-        print(
-            f"CMPING {self.relay1}({self.addr1}) -> {self.relay2}(group with {len(receivers)} receivers) count={args.count} interval={args.interval}s"
+        log.info(
+            "CMPING %s(%s) -> %s(group with %d receivers) count=%d interval=%ss",
+            self.relay1, self.addr1, self.relay2, len(receivers),
+            args.count, args.interval,
         )
         ALPHANUMERIC = string.ascii_lowercase + string.digits
         self.tx = "".join(random.choices(ALPHANUMERIC, k=30))
@@ -749,21 +780,22 @@ class Pinger:
                         # Log non-ping messages at verbose level 3
                         receiver_addr = self.receivers_addrs[receiver_idx]
                         ellipsis = "..." if len(text) > 50 else ""
-                        print(
-                            f"  [{receiver_addr}] INCOMING_MSG (non-ping): {text[:50]}{ellipsis}"
+                        log.debug(
+                            "[%s] INCOMING_MSG (non-ping): %s%s",
+                            receiver_addr, text[:50], ellipsis,
                         )
                 elif event.kind == EventType.ERROR and self.args.verbose >= 1:
-                    print(f"✗ ERROR: {event.msg}")
+                    log.warning(f"ERROR: {event.msg}")
                 elif event.kind == EventType.MSG_FAILED and self.args.verbose >= 1:
                     msg = receiver.get_message_by_id(event.msg_id)
                     text = msg.get_snapshot().text
-                    print(f"✗ Message failed: {text}")
+                    log.warning(f"Message failed: {text}")
                 elif (
                     event.kind in (EventType.INFO, EventType.WARNING)
                     and self.args.verbose >= 1
                 ):
                     ms_now = (time.time() - start_clock) * 1000
-                    print(f"INFO {ms_now:07.1f}ms: {event.msg}")
+                    log.info(f"{ms_now:.1f}ms: {event.msg}")
                 elif self.args.verbose >= 3:
                     # Log all other events at verbose level 3
                     receiver_addr = self.receivers_addrs[receiver_idx]
