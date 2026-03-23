@@ -31,7 +31,6 @@ import sys
 import threading
 import time
 import urllib.parse
-from dataclasses import dataclass
 from statistics import stdev
 
 from deltachat_rpc_client import AttrDict, DeltaChat, EventType, Rpc
@@ -56,17 +55,131 @@ class CMPingError(Exception):
     pass
 
 
+def classify_failure(raw):
+    """Classify a raw error message into a failure category.
+
+    Ported from gocmping's classifyFailure
+
+    Returns one of: syntax, auth, dns, timeout, policy_reject, unknown.
+    """
+    msg = raw.lower()
+    if any(s in msg for s in ("bad recipient address syntax", "recipient address syntax", "5.1.3", "syntax")):
+        return "syntax"
+    if any(s in msg for s in ("auth", "authentication", "5.7.8", "535")):
+        return "auth"
+    if any(s in msg for s in ("no such host", "nxdomain", "dns")):
+        return "dns"
+    if any(s in msg for s in ("timed out", "timeout", "deadline exceeded")):
+        return "timeout"
+    if any(s in msg for s in ("policy", "blocked", "deny", "rejected", "reject", "5.7.1")):
+        return "policy_reject"
+    return "unknown"
+
+
+class FailureTracker:
+    """Thread-safe tracker for failure events, classified by phase and category.
+
+    Ported from gocmping's failureTracker
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._counts = {}    # {phase:category: count}
+        self._examples = {}  # {phase:category: first_raw_example}
+
+    def add(self, phase, raw):
+        """Record a failure event.
+
+        Args:
+            phase: The phase where the failure occurred (e.g. "join", "send").
+            raw: The raw error message string.
+        """
+        category = classify_failure(raw)
+        key = f"{phase}:{category}"
+        with self._lock:
+            self._counts[key] = self._counts.get(key, 0) + 1
+            if key not in self._examples and raw:
+                self._examples[key] = raw
+
+    def snapshot(self):
+        """Return a sorted list of failure summaries.
+
+        Returns:
+            list[dict]: Each dict has keys: phase, category, count, example.
+        """
+        with self._lock:
+            out = []
+            for key, count in self._counts.items():
+                parts = key.split(":", 1)
+                phase = parts[0] if len(parts) == 2 else key
+                category = parts[1] if len(parts) == 2 else "unknown"
+                out.append({
+                    "phase": phase,
+                    "category": category,
+                    "count": count,
+                    "example": self._examples.get(key, ""),
+                })
+            out.sort(key=lambda x: (x["phase"], x["category"]))
+            return out
+
+
 # Spinner characters for progress display
 SPINNER_CHARS = ["|", "/", "-", "\\"]
 
 
-@dataclass
 class RelayContext:
-    """Context for a relay including its RPC connection, DeltaChat instance, and account maker."""
+    """Context for a relay including its RPC connection, DeltaChat instance, and account maker.
 
-    rpc: Rpc
-    dc: DeltaChat
-    maker: "AccountMaker"
+    Can be used as a context manager for automatic cleanup, or managed
+    manually via open()/close() for long-lived relay pools.
+    """
+
+    def __init__(self, relay, accounts_dir, verbose=0):
+        """Prepare a RelayContext (does not start RPC yet).
+
+        Args:
+            relay: The relay domain or IP address.
+            accounts_dir: Path to the accounts directory for this relay.
+            verbose: Verbosity level passed to AccountMaker.
+        """
+        from pathlib import Path
+        self.relay = relay
+        self.accounts_dir = Path(accounts_dir)
+        self.verbose = verbose
+        self.rpc = None
+        self.dc = None
+        self.maker = None
+
+    def open(self):
+        """Start the RPC server and initialize DeltaChat + AccountMaker.
+
+        Returns self for chaining.
+        """
+        if self.accounts_dir.exists() and not self.accounts_dir.joinpath("accounts.toml").exists():
+            shutil.rmtree(self.accounts_dir)
+        self.rpc = Rpc(accounts_dir=self.accounts_dir)
+        self.rpc.__enter__()
+        self.dc = DeltaChat(self.rpc)
+        self.maker = AccountMaker(self.dc, verbose=self.verbose)
+        return self
+
+    def close(self):
+        """Shut down the RPC server."""
+        if self.rpc is not None:
+            try:
+                self.rpc.__exit__(None, None, None)
+            except Exception as e:
+                log.warning("cleanup failed for %s: %s", self.relay, e)
+            self.rpc = None
+            self.dc = None
+            self.maker = None
+
+    def __enter__(self):
+        return self.open()
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
 
 
 def log_event_verbose(event, addr, verbose_level=3):
@@ -483,6 +596,10 @@ def wait_profiles_online_multi(makers, timeout=None):
 def perform_ping(args, accounts_dir=None, timeout=None):
     """Main ping execution function with timing measurements.
 
+    Creates per-relay RelayContext instances, delegates to
+    perform_ping_with_contexts(), and cleans up on exit.  Behavior is
+    identical to previous versions for all existing callers.
+
     Args:
         args: Namespace with relay1, relay2, count, interval, verbose,
               numrecipients, reset attributes.
@@ -496,7 +613,12 @@ def perform_ping(args, accounts_dir=None, timeout=None):
     2. message_time: Time to send and receive all ping messages
 
     Returns:
-        Pinger: The pinger object with results
+        Pinger: The pinger object with results.
+            Also has account_setup_time, message_time (float, seconds)
+            and results list of (seq, ms_duration, receiver_idx) tuples.
+
+    Raises:
+        CMPingError: On account setup or connectivity failures.
     """
     if accounts_dir is not None:
         from pathlib import Path
@@ -508,7 +630,7 @@ def perform_ping(args, accounts_dir=None, timeout=None):
 
     # Determine unique relays being tested. Using a set to deduplicate when
     # relay1 == relay2 (same relay testing), so we only create one RPC context.
-    relays = {args.relay1, args.relay2}
+    relays = list({args.relay1, args.relay2})
 
     # Handle --reset option: remove account directories for tested relays
     if args.reset:
@@ -518,148 +640,178 @@ def perform_ping(args, accounts_dir=None, timeout=None):
                 log.info(f"Removing account directory for {relay}: {relay_dir}")
                 shutil.rmtree(relay_dir)
 
-    # Create per-relay account directories and RPC instances.
-    relay_contexts = {}  # {relay: RelayContext}
-
-    with contextlib.ExitStack() as exit_stack:
+    # Create and open per-relay contexts.
+    relay_contexts = {}
+    try:
         for relay in relays:
             relay_dir = base_accounts_dir.joinpath(relay)
             log.info(f"using accounts_dir for {relay} at: {relay_dir}")
-            if relay_dir.exists() and not relay_dir.joinpath("accounts.toml").exists():
-                shutil.rmtree(relay_dir)
-
+            ctx = RelayContext(relay, relay_dir, verbose=args.verbose)
             try:
-                rpc = exit_stack.enter_context(Rpc(accounts_dir=relay_dir))
+                ctx.open()
             except Exception as e:
                 log.error(f"Failed to initialize RPC for {relay}: {e}")
                 raise
-            dc = DeltaChat(rpc)
-            maker = AccountMaker(dc, verbose=args.verbose)
-            relay_contexts[relay] = RelayContext(rpc=rpc, dc=dc, maker=maker)
+            relay_contexts[relay] = ctx
 
-        # Phase 1: Account Setup (timed)
-        account_setup_start = time.time()
+        return perform_ping_with_contexts(args, relay_contexts, timeout=timeout)
+    finally:
+        for ctx in relay_contexts.values():
+            ctx.close()
 
-        # Set up sender and receiver accounts using per-relay makers
-        sender_maker = relay_contexts[args.relay1].maker
-        receiver_maker = relay_contexts[args.relay2].maker
-        sender, receivers = setup_accounts(args, sender_maker, receiver_maker)
 
-        # Wait for all accounts to be online with timeout feedback
-        # Combine all makers for waiting
-        all_makers = [relay_contexts[r].maker for r in relays]
-        wait_profiles_online_multi(all_makers, timeout=timeout)
+def perform_ping_with_contexts(args, relay_contexts, timeout=None):
+    """Core ping logic using pre-opened RelayContext instances.
 
-        account_setup_time = time.time() - account_setup_start
+    This is the public API for callers that manage their own relay
+    lifecycle (e.g. relay pools that keep contexts alive across rounds).
 
-        group = create_group(sender, receivers, verbose=args.verbose)
+    Args:
+        args: Namespace with relay1, relay2, count, interval, verbose,
+              numrecipients attributes (reset not used here).
+        relay_contexts: dict mapping relay name -> open RelayContext.
+        timeout: Optional per-phase timeout in seconds.
 
-        # Phase 2: Message Ping/Pong (timed)
-        message_start = time.time()
+    Returns:
+        Pinger: The pinger object with results.
+            Has account_setup_time, message_time (float, seconds),
+            results list of (seq, ms_duration, receiver_idx) tuples, and
+            failures (FailureTracker).
 
-        pinger = Pinger(args, sender, group, receivers)
-        if timeout is not None:
-            pinger.deadline = time.time() + timeout
-        received = {}
-        # Track current sequence for output formatting
-        current_seq = None
-        # Track timing for each sequence
-        seq_tracking = {}
-        # Gate CLI output on _cli_output flag -- silent when used as library.
-        show_output = _cli_output
-        try:
-            for seq, ms_duration, size, receiver_idx in pinger.receive():
-                if seq not in received:
-                    received[seq] = []
-                received[seq].append(ms_duration)
+    Raises:
+        CMPingError: On account setup or connectivity failures.
+    """
+    failures = FailureTracker()
+    relays = list({args.relay1, args.relay2})
 
-                # Track timing for this sequence
-                if seq not in seq_tracking:
-                    seq_tracking[seq] = {
-                        "count": 0,
-                        "first_time": ms_duration,
-                        "last_time": ms_duration,
-                        "size": size,
-                    }
-                seq_tracking[seq]["count"] += 1
-                seq_tracking[seq]["last_time"] = ms_duration
+    # Phase 1: Account Setup (timed)
+    account_setup_start = time.time()
 
-                if not show_output:
-                    continue
+    # Set up sender and receiver accounts using per-relay makers
+    sender_maker = relay_contexts[args.relay1].maker
+    receiver_maker = relay_contexts[args.relay2].maker
+    sender, receivers = setup_accounts(args, sender_maker, receiver_maker)
 
-                # Print new line for new sequence or first message
-                if current_seq != seq:
-                    if current_seq is not None:
-                        print()  # End previous line
-                    # Start new line for this sequence
-                    print(
-                        f"{size} bytes ME -> {pinger.relay1} -> {pinger.relay2} -> ME seq={seq} time={ms_duration:0.2f}ms",
-                        end="",
-                        flush=True,
-                    )
-                    current_seq = seq
+    # Wait for all accounts to be online with timeout feedback
+    all_makers = [relay_contexts[r].maker for r in relays]
+    wait_profiles_online_multi(all_makers, timeout=timeout)
 
-                # Print N/M ratio with in-place update (spinning effect)
-                count = seq_tracking[seq]["count"]
-                total = args.numrecipients
-                # Calculate how many characters we need to overwrite from previous ratio
-                if count > 1:
-                    # Backspace over previous ratio to update in-place
-                    prev_count = count - 1
-                    prev_ratio_len = len(f" {prev_count}/{total}")
-                    print("\b" * prev_ratio_len, end="", flush=True)
-                print(f" {count}/{total}", end="", flush=True)
+    account_setup_time = time.time() - account_setup_start
 
-                # If all receivers have received, print elapsed time
-                if count == total:
-                    first_time = seq_tracking[seq]["first_time"]
-                    last_time = seq_tracking[seq]["last_time"]
-                    elapsed = last_time - first_time
-                    print(f" (elapsed: {elapsed:0.2f}ms)", end="", flush=True)
+    group = create_group(sender, receivers, verbose=args.verbose)
 
-        except KeyboardInterrupt:
-            pass
+    # Phase 2: Message Ping/Pong (timed)
+    message_start = time.time()
 
-        pinger._send_thread.join(timeout=2.0)
-        message_time = time.time() - message_start
+    pinger = Pinger(args, sender, group, receivers)
+    if timeout is not None:
+        pinger.deadline = time.time() + timeout
+    received = {}
+    # Track current sequence for output formatting
+    current_seq = None
+    # Track timing for each sequence
+    seq_tracking = {}
+    # Gate CLI output on _cli_output flag -- silent when used as library.
+    show_output = _cli_output
+    try:
+        for seq, ms_duration, size, receiver_idx in pinger.receive():
+            if seq not in received:
+                received[seq] = []
+            received[seq].append(ms_duration)
+            pinger.results.append((seq, ms_duration, receiver_idx))
 
-        if show_output:
-            if current_seq is not None:
-                print()  # End last line
+            # Track timing for this sequence
+            if seq not in seq_tracking:
+                seq_tracking[seq] = {
+                    "count": 0,
+                    "first_time": ms_duration,
+                    "last_time": ms_duration,
+                    "size": size,
+                }
+            seq_tracking[seq]["count"] += 1
+            seq_tracking[seq]["last_time"] = ms_duration
 
-            # Print statistics - show full addresses only in verbose >= 2
-            if args.verbose >= 2:
-                receivers_info = pinger.receivers_addrs_str
-            else:
-                receivers_info = f"{len(pinger.receivers_addrs)} receivers"
-            print(f"--- {pinger.addr1} -> {receivers_info} statistics ---")
-            print(
-                f"{pinger.sent} transmitted, {pinger.received} received, {pinger.loss:.2f}% loss"
-            )
-            if received:
-                all_durations = [d for durations in received.values() for d in durations]
-                rmin = min(all_durations)
-                ravg = sum(all_durations) / len(all_durations)
-                rmax = max(all_durations)
-                rmdev = stdev(all_durations) if len(all_durations) >= 2 else rmax
+            if not show_output:
+                continue
+
+            # Print new line for new sequence or first message
+            if current_seq != seq:
+                if current_seq is not None:
+                    print()  # End previous line
+                # Start new line for this sequence
                 print(
-                    f"rtt min/avg/max/mdev = {rmin:.3f}/{ravg:.3f}/{rmax:.3f}/{rmdev:.3f} ms"
+                    f"{size} bytes ME -> {pinger.relay1} -> {pinger.relay2} -> ME seq={seq} time={ms_duration:0.2f}ms",
+                    end="",
+                    flush=True,
                 )
+                current_seq = seq
 
-        # Print timing and rate statistics
-        print("--- timing statistics ---")
-        print(f"account setup: {format_duration(account_setup_time)}")
-        print(f"message send/recv: {format_duration(message_time)}")
+            # Print N/M ratio with in-place update (spinning effect)
+            count = seq_tracking[seq]["count"]
+            total = args.numrecipients
+            # Calculate how many characters we need to overwrite from previous ratio
+            if count > 1:
+                # Backspace over previous ratio to update in-place
+                prev_count = count - 1
+                prev_ratio_len = len(f" {prev_count}/{total}")
+                print("\b" * prev_ratio_len, end="", flush=True)
+            print(f" {count}/{total}", end="", flush=True)
 
-        # Calculate message rates
-        if message_time > 0 and pinger.sent > 0:
-            send_rate = pinger.sent / message_time
-            print(f"send rate: {send_rate:.2f} msg/s")
-        if message_time > 0 and pinger.received > 0:
-            recv_rate = pinger.received / message_time
-            print(f"recv rate: {recv_rate:.2f} msg/s")
+            # If all receivers have received, print elapsed time
+            if count == total:
+                first_time = seq_tracking[seq]["first_time"]
+                last_time = seq_tracking[seq]["last_time"]
+                elapsed = last_time - first_time
+                print(f" (elapsed: {elapsed:0.2f}ms)", end="", flush=True)
 
-        return pinger
+    except KeyboardInterrupt:
+        pass
+
+    pinger._send_thread.join(timeout=2.0)
+    message_time = time.time() - message_start
+
+    if show_output:
+        if current_seq is not None:
+            print()  # End last line
+
+        # Print statistics - show full addresses only in verbose >= 2
+        if args.verbose >= 2:
+            receivers_info = pinger.receivers_addrs_str
+        else:
+            receivers_info = f"{len(pinger.receivers_addrs)} receivers"
+        print(f"--- {pinger.addr1} -> {receivers_info} statistics ---")
+        print(
+            f"{pinger.sent} transmitted, {pinger.received} received, {pinger.loss:.2f}% loss"
+        )
+        if received:
+            all_durations = [d for durations in received.values() for d in durations]
+            rmin = min(all_durations)
+            ravg = sum(all_durations) / len(all_durations)
+            rmax = max(all_durations)
+            rmdev = stdev(all_durations) if len(all_durations) >= 2 else rmax
+            print(
+                f"rtt min/avg/max/mdev = {rmin:.3f}/{ravg:.3f}/{rmax:.3f}/{rmdev:.3f} ms"
+            )
+
+    # Print timing and rate statistics
+    print("--- timing statistics ---")
+    print(f"account setup: {format_duration(account_setup_time)}")
+    print(f"message send/recv: {format_duration(message_time)}")
+
+    # Calculate message rates
+    if message_time > 0 and pinger.sent > 0:
+        send_rate = pinger.sent / message_time
+        print(f"send rate: {send_rate:.2f} msg/s")
+    if message_time > 0 and pinger.received > 0:
+        recv_rate = pinger.received / message_time
+        print(f"recv rate: {recv_rate:.2f} msg/s")
+
+    # Store timing and failure data on pinger
+    pinger.account_setup_time = account_setup_time
+    pinger.message_time = message_time
+    pinger.failures = failures
+
+    return pinger
 
 
 class Pinger:
@@ -706,6 +858,9 @@ class Pinger:
         self.tx = "".join(random.choices(ALPHANUMERIC, k=30))
         self.sent = 0
         self.received = 0
+        self.results = []  # list of (seq, ms_duration, receiver_idx)
+        self.account_setup_time = 0.0
+        self.message_time = 0.0
         # Optional wall-clock deadline for the messaging phase. When set,
         # send_pings() stops sending and receive() stops waiting at this time.
         # Set externally (e.g. by perform_ping) after setup phases complete.
