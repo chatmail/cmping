@@ -72,10 +72,10 @@ def generate_credentials():
     """Generate random username and password for IP-based login.
 
     Returns:
-        tuple: (username, password) where username is 12 chars and password is 20 chars
+        tuple: (username, password) where username is 9 chars and password is 20 chars
     """
     chars = string.ascii_lowercase + string.digits
-    username = "".join(random.choices(chars, k=12))
+    username = "".join(random.choices(chars, k=9))
     password = "".join(random.choices(chars, k=20))
     return username, password
 
