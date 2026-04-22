@@ -87,7 +87,7 @@ def create_qr_url(domain_or_ip):
         domain_or_ip: Either a domain name or an IP address
 
     Returns:
-        str: Either dcaccount:domain or dclogin:username@ip/?p=password&v=1&ip=993&sp=465&ic=3&ss=default
+        str: Either dcaccount:domain or dclogin:username@[ip]/?p=password&v=1&ih=ip&sh=ip&ip=993&sp=465&ic=3&ss=default
     """
     if is_ip_address(domain_or_ip):
         # Generate credentials for IP address
@@ -99,8 +99,8 @@ def create_qr_url(domain_or_ip):
 
         # Format: dclogin:username@host/?query
         qr_url = (
-            f"dclogin:{username}@{domain_or_ip}/?"
-            f"p={encoded_password}&v=1&ip=993&sp=465&ic=3&ss=default"
+            f"dclogin:{username}@[{domain_or_ip}]/?"
+            f"p={encoded_password}&v=1&ih={domain_or_ip}&sh={domain_or_ip}&ip=993&sp=465&ic=3&ss=default"
         )
         return qr_url
     else:
