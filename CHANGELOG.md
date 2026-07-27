@@ -1,6 +1,3 @@
-
-# cmping changelog 
-
 ## 0.17.1.dev0
 
 (in development)

@@ -31,4 +31,6 @@ jobs:
 
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          skip-existing: true
+          # Fail loudly instead of skipping silently when the
+          # version was already published.
+          skip-existing: false
