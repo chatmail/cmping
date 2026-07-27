@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "cmping"
 readme = "README.md"
 description = "ping messages between chatmail relays"
+requires-python = ">=3.11"
 dependencies = [
   "deltachat-rpc-server>=2.24.0",
   "deltachat-rpc-client>=2.24.0",
@@ -23,17 +24,15 @@ py-modules = ["cmping"]
 
 [project.urls]
 Repository = "https://github.com/chatmail/cmping"
-Changelog = "https://github.com/chatmail/cmping/blob/master/CHANGELOG.md"
+Changelog = "https://github.com/chatmail/cmping/blob/main/CHANGELOG.md"
 
 [project.scripts]
 cmping = "cmping:main"
 
 [tool.pytest.ini_options]
-addopts = "-v -ra --strict-markers"
-
-[tool.setuptools.packages.find]
-where = ["."]
-
+# The deltachat_rpc_client pytest plugin is not used and would need
+# extra dependencies (execnet) to even load.
+addopts = "-v -ra --strict-markers -p no:deltachat_rpc_client.pytestplugin"
 
 [tool.ruff]
 lint.select = [
