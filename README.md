@@ -2,7 +2,7 @@
 
 To install use: 
 
-    pip install cmping 
+    uv tool install cmping
 
 To send and receive from a single chatmail relay: 
 
@@ -61,23 +61,21 @@ Example output for two-domain ping:
 
 ## Developing / Releasing cmping
 
-1. clone the git repository at https://github.com/chatmail/cmping 
+1. clone the git repository at https://github.com/chatmail/cmping
 
-2. install 'cmping" in editing mode: `pip install -e .`
+2. install 'cmping' in editing mode: `uv pip install -e .`
 
 3. edit cmping.py and test, finally commit your changes
 
-4. update CHANGELOG.md with the new version number and changes
+CI checks (ruff lint/format, packaging) come from the shared
+[chatmail/workflows](https://github.com/chatmail/workflows)
+repository; run them locally with `uvx ruff check .` and
+`uvx ruff format --check .`
 
-5. install build/release tools: `pip install build twine`
+To release, update CHANGELOG.md, then create and push a version tag:
 
-6. run the release script:
+    git tag -a v0.18.0 -m "Release v0.18.0"
+    git push origin main v0.18.0
 
-        python release.py
-
-   The release script will:
-   - Validate the version in CHANGELOG.md is a proper version jump
-   - Create and push a git tag for the version
-   - Build the package and upload to PyPI
-   - Add a dev changelog entry and commit it
-   - Print which tag was uploaded to PyPI
+The release.yml workflow then builds and publishes to PyPI via
+trusted publishing (OIDC); no local twine or PyPI token is involved.

@@ -299,7 +299,9 @@ def setup_accounts(args, sender_maker, receiver_maker):
     try:
         sender = sender_maker.get_relay_account(args.relay1)
         profiles_created += 1
-        print_progress("Setting up profiles", profiles_created, total_profiles, profiles_created)
+        print_progress(
+            "Setting up profiles", profiles_created, total_profiles, profiles_created
+        )
     except Exception as e:
         print(f"\r✗ Failed to setup sender profile on {args.relay1}: {e}")
         sys.exit(1)
@@ -311,9 +313,14 @@ def setup_accounts(args, sender_maker, receiver_maker):
             receiver = receiver_maker.get_relay_account(args.relay2)
             receivers.append(receiver)
             profiles_created += 1
-            print_progress("Setting up profiles", profiles_created, total_profiles, profiles_created)
+            print_progress(
+                "Setting up profiles",
+                profiles_created,
+                total_profiles,
+                profiles_created,
+            )
         except Exception as e:
-            print(f"\r✗ Failed to setup receiver profile {i+1} on {args.relay2}: {e}")
+            print(f"\r✗ Failed to setup receiver profile {i + 1} on {args.relay2}: {e}")
             sys.exit(1)
 
     # Profile setup complete
@@ -420,7 +427,9 @@ def wait_profiles_online_multi(makers):
         t.join()
 
     if online_errors:
-        print(f"\n✗ Timeout or error waiting for profiles to be online: {online_errors[0]}")
+        print(
+            f"\n✗ Timeout or error waiting for profiles to be online: {online_errors[0]}"
+        )
         sys.exit(1)
 
     print_progress("Waiting for profiles to be online", done=True)
@@ -437,11 +446,11 @@ def perform_ping(args):
         Pinger: The pinger object with results
     """
     base_accounts_dir = xdg_cache_home().joinpath("cmping")
-    
+
     # Determine unique relays being tested. Using a set to deduplicate when
     # relay1 == relay2 (same relay testing), so we only create one RPC context.
     relays = {args.relay1, args.relay2}
-    
+
     # Handle --reset option: remove account directories for tested relays
     if args.reset:
         for relay in relays:
@@ -449,7 +458,7 @@ def perform_ping(args):
             if relay_dir.exists():
                 print(f"# Removing account directory for {relay}: {relay_dir}")
                 shutil.rmtree(relay_dir)
-    
+
     # Create per-relay account directories and RPC instances.
     relay_contexts = {}  # {relay: RelayContext}
 
@@ -633,7 +642,9 @@ class Pinger:
     @property
     def loss(self):
         expected_total = self.sent * len(self.receivers)
-        return 0.0 if expected_total == 0 else (1 - self.received / expected_total) * 100
+        return (
+            0.0 if expected_total == 0 else (1 - self.received / expected_total) * 100
+        )
 
     def send_pings(self):
         """Send ping messages to the group at regular intervals.

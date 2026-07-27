@@ -5,6 +5,10 @@
 
 (in development)
 
+- adopt shared CI from chatmail/workflows (ruff lint+format, build)
+  and release via PyPI trusted publishing on v* tags; release.py is
+  replaced by tagging vX.Y.Z
+
 ## 0.17.0
 
 ### Features
