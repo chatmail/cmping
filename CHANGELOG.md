@@ -1,6 +1,9 @@
-## 0.17.1.dev0
 
-(in development)
+## [0.18.0] - 2026-07-27
+
+### Other
+
+- add standard cliff.toml, adapt changelog, fix release file, ignore uv.lock.
 
 - adopt shared CI from chatmail/workflows (ruff lint+format, build)
   and release via PyPI trusted publishing on v* tags; release.py is
