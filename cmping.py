@@ -72,10 +72,10 @@ def generate_credentials():
     """Generate random username and password for IP-based login.
 
     Returns:
-        tuple: (username, password) where username is 12 chars and password is 20 chars
+        tuple: (username, password) where username is 9 chars and password is 20 chars
     """
     chars = string.ascii_lowercase + string.digits
-    username = "".join(random.choices(chars, k=12))
+    username = "".join(random.choices(chars, k=9))
     password = "".join(random.choices(chars, k=20))
     return username, password
 
@@ -87,7 +87,7 @@ def create_qr_url(domain_or_ip):
         domain_or_ip: Either a domain name or an IP address
 
     Returns:
-        str: Either dcaccount:domain or dclogin:username@ip/?p=password&v=1&ip=993&sp=465&ic=3&ss=default
+        str: Either dcaccount:domain or dclogin:username@[ip]/?p=password&v=1&ih=ip&sh=ip&ip=993&sp=465&ic=3&ss=default
     """
     if is_ip_address(domain_or_ip):
         # Generate credentials for IP address
@@ -99,8 +99,8 @@ def create_qr_url(domain_or_ip):
 
         # Format: dclogin:username@host/?query
         qr_url = (
-            f"dclogin:{username}@{domain_or_ip}/?"
-            f"p={encoded_password}&v=1&ip=993&sp=465&ic=3&ss=default"
+            f"dclogin:{username}@[{domain_or_ip}]/?"
+            f"p={encoded_password}&v=1&ih={domain_or_ip}&sh={domain_or_ip}&ip=993&sp=465&ic=3&ss=default"
         )
         return qr_url
     else:
@@ -241,12 +241,13 @@ class AccountMaker:
 
     def get_relay_account(self, domain):
         # Try to find an existing account for this domain/IP
+        expected_domain = f"[{domain}]" if is_ip_address(domain) else domain
         for account in self.dc.get_all_accounts():
             addr = account.get_config("configured_addr")
             if addr is not None:
                 # Extract the domain/IP from the configured address
                 addr_domain = addr.split("@")[1] if "@" in addr else None
-                if addr_domain == domain:
+                if addr_domain == expected_domain:
                     if account not in self.online:
                         if self.verbose >= 3:
                             print(f"  Reusing existing account: {addr}")
