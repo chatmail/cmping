@@ -1,3 +1,5 @@
+# Standard workflow config of chatmail/workflow's py-checks flow.
+
 name: CI
 
 on:
