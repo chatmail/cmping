@@ -241,12 +241,13 @@ class AccountMaker:
 
     def get_relay_account(self, domain):
         # Try to find an existing account for this domain/IP
+        expected_domain = f"[{domain}]" if is_ip_address(domain) else domain
         for account in self.dc.get_all_accounts():
             addr = account.get_config("configured_addr")
             if addr is not None:
                 # Extract the domain/IP from the configured address
                 addr_domain = addr.split("@")[1] if "@" in addr else None
-                if addr_domain == domain:
+                if addr_domain == expected_domain:
                     if account not in self.online:
                         if self.verbose >= 3:
                             print(f"  Reusing existing account: {addr}")
