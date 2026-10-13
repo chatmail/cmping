@@ -69,8 +69,9 @@ def is_ip_address(host):
 
 
 def get_account_addr(account):
+    """Return the address of a profile using exactly one relay, None otherwise."""
     transports = account.list_transports()
-    return transports[0]["addr"] if transports else None
+    return transports[0]["addr"] if len(transports) == 1 else None
 
 
 def generate_credentials():
@@ -241,11 +242,17 @@ class AccountMaker:
         # Enable bot mode in all accounts before starting I/O
         # so we don't have to accept contact requests.
         account.set_config("bot", "1")
+
+        # Prevent automatically adding relays.
+        info = account.get_info()
+        for key in ("autorelay", "automatic_relay_management"):
+            if info.get(key) == "true":
+                account.set_config(key, "0")
         account.start_io()
         self.online.append(account)
 
     def get_relay_account(self, domain):
-        # Try to find an existing account for this domain/IP
+        # Try to find an existing single-relay account for this domain/IP
         expected_domain = f"[{domain}]" if is_ip_address(domain) else domain
         for account in self.dc.get_all_accounts():
             addr = get_account_addr(account)
@@ -481,6 +488,12 @@ def perform_ping(args):
                 print(f"✗ Failed to initialize RPC for {relay}: {e}")
                 raise
             dc = DeltaChat(rpc)
+            # Profiles that gained further relays no longer measure one relay.
+            for account in dc.get_all_accounts():
+                addrs = [t["addr"] for t in account.list_transports()]
+                if len(addrs) > 1:
+                    print(f"# Removing multi-relay profile: {', '.join(addrs)}")
+                    account.remove()
             maker = AccountMaker(dc, verbose=args.verbose)
             relay_contexts[relay] = RelayContext(rpc=rpc, dc=dc, maker=maker)
 
