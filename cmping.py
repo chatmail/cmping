@@ -68,6 +68,11 @@ def is_ip_address(host):
         return False
 
 
+def get_account_addr(account):
+    transports = account.list_transports()
+    return transports[0]["addr"] if transports else None
+
+
 def generate_credentials():
     """Generate random username and password for IP-based login.
 
@@ -218,19 +223,19 @@ class AccountMaker:
                 event = ac.wait_for_event()
                 if event.kind == EventType.IMAP_INBOX_IDLE:
                     if self.verbose >= 3:
-                        addr = ac.get_config("addr")
+                        addr = get_account_addr(ac)
                         print(f"✓ IMAP_INBOX_IDLE: {addr} is now idle and ready")
                     break
                 elif event.kind == EventType.ERROR and self.verbose >= 1:
                     print(f"✗ ERROR during profile setup: {event.msg}")
                 elif self.verbose >= 3:
                     # Show all events during online phase when verbose level 3
-                    addr = ac.get_config("addr")
+                    addr = get_account_addr(ac)
                     self._log_event(event, addr)
 
     def _add_online(self, account):
         if self.verbose >= 3:
-            addr = account.get_config("addr")
+            addr = get_account_addr(account)
             print(f"  Starting I/O for account: {addr}")
 
         # Enable bot mode in all accounts before starting I/O
@@ -243,7 +248,7 @@ class AccountMaker:
         # Try to find an existing account for this domain/IP
         expected_domain = f"[{domain}]" if is_ip_address(domain) else domain
         for account in self.dc.get_all_accounts():
-            addr = account.get_config("configured_addr")
+            addr = get_account_addr(account)
             if addr is not None:
                 # Extract the domain/IP from the configured address
                 addr_domain = addr.split("@")[1] if "@" in addr else None
@@ -262,7 +267,7 @@ class AccountMaker:
                     print(f"  Configuring account from QR: {domain}")
                 account.set_config_from_qr(qr_url)
                 if self.verbose >= 3:
-                    addr = account.get_config("addr")
+                    addr = get_account_addr(account)
                     print(f"  Account configured: {addr}")
             except Exception as e:
                 print(f"✗ Failed to configure profile on {domain}: {e}")
@@ -344,7 +349,7 @@ def create_group(sender, receivers, verbose=0):
         # Create a contact for the receiver account and add to group
         contact = sender.create_contact(receiver)
         if verbose >= 3:
-            receiver_addr = receiver.get_config("addr")
+            receiver_addr = get_account_addr(receiver)
             print(f"  Adding {receiver_addr} to group")
         group.add_contact(contact)
 
@@ -624,8 +629,8 @@ class Pinger:
         self.sender = sender
         self.group = group
         self.receivers = receivers
-        self.addr1 = sender.get_config("addr")
-        self.receivers_addrs = [receiver.get_config("addr") for receiver in receivers]
+        self.addr1 = get_account_addr(sender)
+        self.receivers_addrs = [get_account_addr(receiver) for receiver in receivers]
         self.receivers_addrs_str = ", ".join(self.receivers_addrs)
         self.relay1 = self.addr1.split("@")[1]
         self.relay2 = self.receivers_addrs[0].split("@")[1]
