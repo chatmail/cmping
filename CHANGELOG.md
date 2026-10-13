@@ -1,4 +1,12 @@
 
+## [0.18.1] - 2026-10-13
+
+### Fixes
+
+- adapt to chatmail/workflows standards.
+- dclogin links for IP addresses need square brackets ([#20](https://github.com/chatmail/cmping/pull/20)).
+- read account address from account.list_transports().
+
 ## [0.18.0] - 2026-07-27
 
 ### Other
