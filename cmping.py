@@ -597,6 +597,12 @@ def perform_ping(args):
             recv_rate = pinger.received / message_time
             print(f"recv rate: {recv_rate:.2f} msg/s")
 
+        # A profile with further relays did not only measure the given relays.
+        for account in [sender, *receivers]:
+            addrs = [t["addr"] for t in account.list_transports()]
+            if len(addrs) > 1:
+                print(f"✗ ERROR: profile uses multiple relays: {', '.join(addrs)}")
+
         return pinger
 
 
