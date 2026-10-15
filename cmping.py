@@ -35,7 +35,7 @@ import urllib.parse
 from dataclasses import dataclass
 from statistics import stdev
 
-from deltachat_rpc_client import DeltaChat, EventType, Rpc
+from deltachat_rpc_client import AttrDict, DeltaChat, EventType, Rpc
 from xdg_base_dirs import xdg_cache_home
 
 # Spinner characters for progress display
@@ -188,6 +188,13 @@ def main():
         help="number of group recipients (default 1)",
     )
     parser.add_argument(
+        "-w",
+        dest="timeout",
+        type=float,
+        default=60,
+        help="seconds to wait for profiles to come online (default 60)",
+    )
+    parser.add_argument(
         "--reset",
         action="store_true",
         help="remove all account directories of tested relays to force fresh account creation",
@@ -215,12 +222,23 @@ class AccountMaker:
             else:
                 print(f"  {event.kind} [{addr}]")
 
-    def wait_all_online(self):
-        remaining = list(self.online)
-        while remaining:
-            ac = remaining.pop()
+    def wait_all_online(self, timeout=60):
+        """Wait until every started account is idle on IMAP.
+
+        Raises TimeoutError when they are not all idle `timeout` seconds from now.
+        """
+        deadline = time.time() + timeout
+        for ac in self.online:
+            # Account.wait_for_event() cannot time out, the queue behind it can.
+            events = self.dc.rpc.get_queue(ac.id)
             while True:
-                event = ac.wait_for_event()
+                wait = max(0.0, deadline - time.time())
+                try:
+                    event = AttrDict(events.get(timeout=wait))
+                except queue.Empty:
+                    addr = get_account_addr(ac)
+                    msg = f"{addr} not online after {timeout:g}s"
+                    raise TimeoutError(msg) from None
                 if event.kind == EventType.IMAP_INBOX_IDLE:
                     if self.verbose >= 3:
                         addr = get_account_addr(ac)
@@ -398,11 +416,12 @@ def wait_profiles_online(maker):
     print_progress("Waiting for profiles to be online", done=True)
 
 
-def wait_profiles_online_multi(makers):
+def wait_profiles_online_multi(makers, timeout):
     """Wait for all profiles to be online with spinner progress.
 
     Args:
         makers: List of AccountMaker instances with accounts to wait for
+        timeout: Seconds after which waiting fails
 
     Raises:
         SystemExit: If waiting for profiles fails
@@ -411,7 +430,7 @@ def wait_profiles_online_multi(makers):
 
     def wait_online_thread(maker):
         try:
-            maker.wait_all_online()
+            maker.wait_all_online(timeout)
         except Exception as e:
             online_errors.append(e)
 
@@ -495,7 +514,7 @@ def perform_ping(args):
         # Wait for all accounts to be online with timeout feedback
         # Combine all makers for waiting
         all_makers = [relay_contexts[r].maker for r in relays]
-        wait_profiles_online_multi(all_makers)
+        wait_profiles_online_multi(all_makers, args.timeout)
 
         account_setup_time = time.time() - account_setup_start
 
